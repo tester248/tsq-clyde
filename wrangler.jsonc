@@ -1,0 +1,37 @@
+{
+  // NOTE: the live worker is spelled with a "K" (tsq-klyde). Keep this in sync
+  // with the deployed worker — renaming would create a second worker.
+  "name": "tsq-klyde",
+  "main": "src/index.js",
+  // Matches the live deployment (v12, 2026-09-19). Do not bump casually:
+  // newer dates change runtime behavior.
+  "compatibility_date": "2025-01-01",
+  // No cron trigger: the old 1-minute @mention poller generated ~14k
+  // requests/day and is superseded by the planned gateway Durable Object
+  // (live Discord events instead of polling). The scheduled() handler in
+  // src/index.js stays as a dormant manual fallback — it costs nothing
+  // without a trigger attached.
+  "kv_namespaces": [
+    {
+      "binding": "LAST_MESSAGE_KV",
+      "id": "bad1f65bfcfc4390b93f71faa8805047"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONVERSATION_DO",
+        "class_name": "ConversationDO"
+      }
+    ]
+  },
+  // Mirrors the live migration state (tag v1). Secrets (DISCORD_TOKEN,
+  // DISCORD_PUBLIC_KEY, DISCORD_BOT_ID, GROQ_API_KEY) are managed outside
+  // this file via `wrangler secret put <NAME>` — never commit them.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["ConversationDO"]
+    }
+  ]
+}
