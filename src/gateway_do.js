@@ -1,0 +1,323 @@
+// Singleton Discord gateway connection. One instance (id "gateway") owns a
+// single outbound WebSocket: identify/resume, heartbeats, reconnect with
+// backoff, and a 60s alarm watchdog. Mention/reply events are dispatched to
+// the existing per-channel ConversationDO pipeline via waitUntil — never
+// blocking heartbeats — and serialized per channel.
+//
+// NOTE: outbound client sockets from `new WebSocket(url)` are automatically
+// accepted by the runtime; do NOT call accept() on them (that is only for
+// server-side WebSocketPair sockets).
+
+import {
+  GATEWAY_URL,
+  identifyPayload,
+  resumePayload,
+  heartbeatPayload,
+  classifyClose,
+  reconnectDelay,
+  shouldHandleMessage,
+} from "./gateway.js";
+import { processMessage } from "./processor.js";
+
+const WATCHDOG_MS = 60_000;
+
+export class GatewayDO {
+  constructor(ctx, env, deps = {}) {
+    this.ctx = ctx;
+    this.env = env;
+    this.deps = {
+      createSocket: (url) => new WebSocket(url),
+      setInterval: (fn, ms) => setInterval(fn, ms),
+      clearInterval: (id) => clearInterval(id),
+      schedule: (fn, ms) => setTimeout(fn, ms),
+      ...deps,
+    };
+    this.socket = null;
+    this.session = null; // { sessionId, resumeUrl, seq, botId } — persisted as gw:session
+    this.seq = null;
+    this.heartbeatTimer = null;
+    this.heartbeatIntervalMs = null;
+    this.heartbeatAcked = true;
+    this.reconnectAttempt = 0;
+    this.fatal = false;
+    this.alarmSet = false;
+    this.inflight = new Map(); // channel_id -> promise chain (per-channel serialization)
+    this.status = {
+      state: "idle",
+      guilds: 0,
+      reconnectAttempt: 0,
+      updatedAt: Date.now(),
+    };
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/status") {
+      return Response.json(this.status);
+    }
+    if (request.method === "POST" && url.pathname === "/wake") {
+      await this.#ensureAlarm();
+      if (!this.fatal && !this.socket) await this.#connect(true);
+      return new Response("ok");
+    }
+    if (request.method === "POST" && url.pathname === "/connect") {
+      // Manual (re)connect, e.g. after a deploy or after fixing the token.
+      this.fatal = false;
+      this.reconnectAttempt = 0;
+      await this.#ensureAlarm();
+      if (!this.socket) await this.#connect(true);
+      return new Response("ok");
+    }
+    return new Response("not found", { status: 404 });
+  }
+
+  // Watchdog: re-arms itself every minute and heals a missing socket
+  // (eviction, missed close event, dropped backoff timer).
+  async alarm() {
+    try {
+      if (!this.fatal && !this.socket) await this.#connect(true);
+    } finally {
+      await this.ctx.storage.setAlarm(Date.now() + WATCHDOG_MS);
+      this.alarmSet = true;
+    }
+  }
+
+  async #ensureAlarm() {
+    if (this.alarmSet) return;
+    await this.ctx.storage.setAlarm(Date.now() + WATCHDOG_MS);
+    this.alarmSet = true;
+  }
+
+  async #loadSession() {
+    if (this.session) return;
+    const stored = await this.ctx.storage.get("gw:session");
+    if (stored) {
+      this.session = stored;
+      this.seq = stored.seq ?? null;
+    }
+  }
+
+  #saveSession() {
+    return this.ctx.storage.put("gw:session", this.session);
+  }
+
+  #setStatus(patch) {
+    this.status = { ...this.status, ...patch, updatedAt: Date.now() };
+    return this.ctx.storage
+      .put("gw:status", this.status)
+      .catch((err) => console.error("gateway status persist failed", err));
+  }
+
+  #send(frame) {
+    try {
+      this.socket?.send(JSON.stringify(frame));
+    } catch (err) {
+      console.error("gateway send failed", err);
+    }
+  }
+
+  async #connect(resumePreferred) {
+    if (this.socket) return;
+    await this.#loadSession();
+    const canResume = resumePreferred && this.session?.sessionId;
+    const url = canResume ? this.session.resumeUrl || GATEWAY_URL : GATEWAY_URL;
+    const ws = this.deps.createSocket(url);
+    this.socket = ws;
+    ws.addEventListener("message", (event) => void this.#onSocketMessage(event));
+    ws.addEventListener("close", (event) => void this.#onSocketClose(event));
+    ws.addEventListener("error", (event) =>
+      console.error("gateway socket error", event?.message || event)
+    );
+    this.#setStatus({ state: "connecting" });
+  }
+
+  #disconnect() {
+    if (this.heartbeatTimer !== null && this.heartbeatTimer !== undefined) {
+      this.deps.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    const ws = this.socket;
+    this.socket = null;
+    if (ws) {
+      try {
+        ws.close(1000);
+      } catch (err) {
+        console.error("gateway socket close failed", err);
+      }
+    }
+  }
+
+  #reconnect(resumePreferred) {
+    this.#disconnect();
+    if (this.fatal) return;
+    this.reconnectAttempt += 1;
+    const delay = reconnectDelay(this.reconnectAttempt);
+    this.#setStatus({ state: "disconnected", reconnectAttempt: this.reconnectAttempt });
+    this.deps.schedule(() => {
+      if (!this.fatal && !this.socket) void this.#connect(resumePreferred);
+    }, delay);
+  }
+
+  async #onSocketMessage(event) {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (msg.s !== undefined && msg.s !== null) {
+      this.seq = msg.s;
+      if (this.session) {
+        this.session.seq = msg.s;
+        await this.#saveSession();
+      }
+    }
+    switch (msg.op) {
+      case 10:
+        return this.#onHello(msg.d);
+      case 11:
+        this.heartbeatAcked = true;
+        return;
+      case 7: // RECONNECT requested by Discord — resume.
+        return this.#reconnect(true);
+      case 9: // INVALID SESSION
+        return this.#onInvalidSession(msg.d);
+      case 0:
+        return this.#onDispatch(msg.t, msg.d);
+      default:
+        return;
+    }
+  }
+
+  #onHello(d) {
+    this.heartbeatIntervalMs = d.heartbeat_interval;
+    const token = this.env.DISCORD_TOKEN;
+    if (this.session?.sessionId) {
+      this.#send(resumePayload(token, this.session.sessionId, this.seq));
+    } else {
+      this.#send(identifyPayload(token));
+    }
+    // First heartbeat goes out immediately; the timer covers the rest.
+    this.heartbeatAcked = false;
+    this.#send(heartbeatPayload(this.seq));
+    if (this.heartbeatTimer !== null && this.heartbeatTimer !== undefined) {
+      this.deps.clearInterval(this.heartbeatTimer);
+    }
+    this.heartbeatTimer = this.deps.setInterval(() => this.#onHeartbeatTick(), this.heartbeatIntervalMs);
+  }
+
+  #onHeartbeatTick() {
+    if (!this.heartbeatAcked) {
+      // Zombie: a full interval passed with no ACK. Drop it and resume.
+      this.#reconnect(true);
+      return;
+    }
+    this.heartbeatAcked = false;
+    this.#send(heartbeatPayload(this.seq));
+  }
+
+  async #onInvalidSession(resumable) {
+    if (!resumable) {
+      // d:false — resume would loop forever. Drop the session, fresh identify.
+      this.session = null;
+      this.seq = null;
+      await this.ctx.storage.put("gw:session", null);
+    }
+    this.#reconnect(true);
+  }
+
+  #onSocketClose(event) {
+    const code = event?.code ?? 1006;
+    this.#disconnect();
+    const action = classifyClose(code);
+    if (action === "fatal") {
+      this.fatal = true;
+      this.#setStatus({ state: "fatal", closeCode: code });
+      console.error(`gateway closed with fatal code ${code}; fix config and POST /connect`);
+      return;
+    }
+    if (action === "fresh") {
+      this.session = null;
+      this.seq = null;
+      void this.ctx.storage.put("gw:session", null);
+    }
+    this.#reconnect(true);
+  }
+
+  async #onDispatch(type, data) {
+    if (type === "READY") {
+      this.session = {
+        sessionId: data.session_id,
+        resumeUrl: data.resume_gateway_url || GATEWAY_URL,
+        seq: this.seq,
+        botId: data.user?.id,
+      };
+      await this.#saveSession();
+      this.reconnectAttempt = 0;
+      if (data.user?.id && this.env.LAST_MESSAGE_KV) {
+        try {
+          await this.env.LAST_MESSAGE_KV.put("discord_bot_id", data.user.id);
+        } catch (err) {
+          console.error("bot id cache failed", err);
+        }
+      }
+      await this.#setStatus({
+        state: "connected",
+        guilds: data.guilds?.length ?? 0,
+        reconnectAttempt: 0,
+      });
+      return;
+    }
+    if (type === "RESUMED") {
+      this.reconnectAttempt = 0;
+      await this.#setStatus({ state: "connected", reconnectAttempt: 0 });
+      return;
+    }
+    if (type === "MESSAGE_CREATE") {
+      this.#handleGatewayMessage(data);
+    }
+  }
+
+  #handleGatewayMessage(msg) {
+    // Sync resolution only: env secret or the READY-provided id. No network
+    // on the socket hot path; without an id we safely handle nothing.
+    const botId = this.env.DISCORD_BOT_ID || this.session?.botId;
+    const verdict = shouldHandleMessage(msg, botId);
+    if (!verdict.handle) return;
+    // Per-channel serialization: chain onto the in-flight tail so two rapid
+    // mentions never run overlapping Groq calls for the same channel.
+    const key = msg.channel_id;
+    const prev = this.inflight.get(key) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => this.#answerMention(msg, verdict.prompt));
+    this.inflight.set(key, next);
+    // Detached from socket processing: a slow LLM call must never stall
+    // heartbeats. waitUntil also keeps the DO alive for the duration.
+    this.ctx.waitUntil(
+      next.finally(() => {
+        if (this.inflight.get(key) === next) this.inflight.delete(key);
+      })
+    );
+  }
+
+  async #answerMention(msg, prompt) {
+    try {
+      // No `interaction`: processMessage posts the reply via REST itself.
+      await processMessage(
+        {
+          channel_id: msg.channel_id,
+          guild_id: msg.guild_id,
+          user_id: msg.author?.id,
+          content: prompt,
+        },
+        this.env
+      );
+    } catch (err) {
+      console.error("gateway mention reply failed", err);
+    }
+    try {
+      await this.env.LAST_MESSAGE_KV.put(`last_${msg.channel_id}`, msg.id);
+    } catch (err) {
+      console.error("gateway last-message persist failed", err);
+    }
+  }
+}
