@@ -22,11 +22,10 @@
       {
         "name": "CONVERSATION_DO",
         "class_name": "ConversationDO"
-      },
-      {
-        "name": "GATEWAY_DO",
-        "class_name": "GatewayDO"
       }
+      // GATEWAY_DO binding temporarily removed (v3 deletes the class) to
+      // destroy the runaway pre-guard gateway instance that pins itself via
+      // its own reconnect storm. Restored in v4.
     ]
   },
   // Mirrors the live migration state (tag v1). Secrets (DISCORD_TOKEN,
@@ -42,6 +41,14 @@
       // SQLite-backed namespace: required for new classes on Workers Free.
       // (v1 stays as-is — it was applied to the live worker already.)
       "new_sqlite_classes": ["GatewayDO"]
+    },
+    {
+      "tag": "v3",
+      // Destroys the pre-guard GatewayDO instance stuck in a self-sustaining
+      // reconnect storm (it re-pins its own eviction shield on every cycle,
+      // so new deploys can't take over). Data loss is nil: no session was
+      // ever established. v4 re-creates the class.
+      "deleted_classes": ["GatewayDO"]
     }
   ]
 }
