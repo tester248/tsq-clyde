@@ -22,11 +22,9 @@
       {
         "name": "CONVERSATION_DO",
         "class_name": "ConversationDO"
-      },
-      {
-        "name": "GATEWAY_DO",
-        "class_name": "GatewayDO"
       }
+      // GATEWAY_DO binding removed alongside v5 (delete-class migrations
+      // require no referencing binding). Restored with v6.
     ]
   },
   // Mirrors the live migration state (tag v1). Secrets (DISCORD_TOKEN,
@@ -56,6 +54,14 @@
       // Re-creates GatewayDO after the v3 teardown. Fresh namespace, guarded
       // connect path (single socket, single chain).
       "new_sqlite_classes": ["GatewayDO"]
+    },
+    {
+      // Live DO instances survive deploys, so the payload fix can't reach
+      // the running stormer on its own (it re-pins its eviction shield
+      // every cycle). v5 destroys it; v6 re-creates (separate deploys:
+      // delete-class requires the binding gone).
+      "tag": "v5",
+      "deleted_classes": ["GatewayDO"]
     }
   ]
 }
