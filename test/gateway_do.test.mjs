@@ -167,6 +167,16 @@ describe("GatewayDO", () => {
     return { state, sockets, timers, env, kv, gw };
   }
 
+  it("concurrent wakes open only one socket", async () => {
+    const { gw, sockets } = setup();
+    await Promise.all([
+      gw.fetch(new Request("https://gateway/wake", { method: "POST" })),
+      gw.fetch(new Request("https://gateway/wake", { method: "POST" })),
+    ]);
+    await tick();
+    assert.equal(sockets.length, 1);
+  });
+
   it("/wake on cold start creates the gateway socket", async () => {
     const { gw, sockets } = setup();
     const res = await gw.fetch(new Request("https://gateway/wake", { method: "POST" }));

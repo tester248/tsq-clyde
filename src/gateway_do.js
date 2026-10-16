@@ -33,6 +33,7 @@ export class GatewayDO {
       ...deps,
     };
     this.socket = null;
+    this.connecting = false; // synchronous guard: closes the concurrent-wake race
     this.session = null; // { sessionId, resumeUrl, seq, botId } — persisted as gw:session
     this.seq = null;
     this.heartbeatTimer = null;
@@ -117,18 +118,27 @@ export class GatewayDO {
   }
 
   async #connect(resumePreferred) {
-    if (this.socket) return;
-    await this.#loadSession();
-    const canResume = resumePreferred && this.session?.sessionId;
-    const url = canResume ? this.session.resumeUrl || GATEWAY_URL : GATEWAY_URL;
-    const ws = this.deps.createSocket(url);
-    this.socket = ws;
-    ws.addEventListener("message", (event) => void this.#onSocketMessage(event));
-    ws.addEventListener("close", (event) => void this.#onSocketClose(event));
-    ws.addEventListener("error", (event) =>
-      console.error("gateway socket error", event?.message || event)
-    );
-    this.#setStatus({ state: "connecting" });
+    // Guard must be synchronous: two concurrent wakes would otherwise both
+    // observe socket===null across the loadSession await and open two
+    // sockets, which Discord answers by killing one and storming closes.
+    if (this.socket || this.connecting) return;
+    this.connecting = true;
+    try {
+      await this.#loadSession();
+      const canResume = resumePreferred && this.session?.sessionId;
+      const url = canResume ? this.session.resumeUrl || GATEWAY_URL : GATEWAY_URL;
+      console.log(`gateway connecting (resume=${!!canResume})`);
+      const ws = this.deps.createSocket(url);
+      this.socket = ws;
+      ws.addEventListener("message", (event) => void this.#onSocketMessage(event));
+      ws.addEventListener("close", (event) => void this.#onSocketClose(event));
+      ws.addEventListener("error", (event) =>
+        console.error("gateway socket error", event?.message || event)
+      );
+      this.#setStatus({ state: "connecting" });
+    } finally {
+      this.connecting = false;
+    }
   }
 
   #disconnect() {
@@ -154,7 +164,7 @@ export class GatewayDO {
     const delay = reconnectDelay(this.reconnectAttempt);
     this.#setStatus({ state: "disconnected", reconnectAttempt: this.reconnectAttempt });
     this.deps.schedule(() => {
-      if (!this.fatal && !this.socket) void this.#connect(resumePreferred);
+      if (!this.fatal && !this.socket && !this.connecting) void this.#connect(resumePreferred);
     }, delay);
   }
 
@@ -179,8 +189,10 @@ export class GatewayDO {
         this.heartbeatAcked = true;
         return;
       case 7: // RECONNECT requested by Discord — resume.
+        console.log("gateway RECONNECT requested by Discord, resuming");
         return this.#reconnect(true);
       case 9: // INVALID SESSION
+        console.log(`gateway INVALID SESSION resumable=${msg.d}`);
         return this.#onInvalidSession(msg.d);
       case 0:
         return this.#onDispatch(msg.t, msg.d);
@@ -191,6 +203,8 @@ export class GatewayDO {
 
   #onHello(d) {
     this.heartbeatIntervalMs = d.heartbeat_interval;
+    const resuming = !!this.session?.sessionId;
+    console.log(`gateway HELLO, heartbeat=${this.heartbeatIntervalMs}ms, resuming=${resuming}`);
     const token = this.env.DISCORD_TOKEN;
     if (this.session?.sessionId) {
       this.#send(resumePayload(token, this.session.sessionId, this.seq));
@@ -230,6 +244,8 @@ export class GatewayDO {
     const code = event?.code ?? 1006;
     this.#disconnect();
     const action = classifyClose(code);
+    console.log(`gateway socket closed code=${code} action=${action}`);
+    this.#setStatus({ closeCode: code });
     if (action === "fatal") {
       this.fatal = true;
       this.#setStatus({ state: "fatal", closeCode: code });
@@ -254,6 +270,7 @@ export class GatewayDO {
       };
       await this.#saveSession();
       this.reconnectAttempt = 0;
+      console.log(`gateway READY session=${data.session_id} guilds=${data.guilds?.length ?? 0}`);
       if (data.user?.id && this.env.LAST_MESSAGE_KV) {
         try {
           await this.env.LAST_MESSAGE_KV.put("discord_bot_id", data.user.id);
