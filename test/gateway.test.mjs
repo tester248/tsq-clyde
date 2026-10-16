@@ -31,7 +31,7 @@ describe("gateway protocol helpers", () => {
 
   it("reconnectDelay backs off with jitter and caps at 60s + jitter", () => {
     const d0 = reconnectDelay(0);
-    assert.ok(d0 >= 1000 && d0 < 2000, `attempt 0 out of range: ${d0}`);
+    assert.ok(d0 >= 5000 && d0 < 6000, `attempt 0 out of range: ${d0}`);
     const d10 = reconnectDelay(10);
     assert.ok(d10 >= 60000 && d10 <= 61000, `attempt 10 out of range: ${d10}`);
   });

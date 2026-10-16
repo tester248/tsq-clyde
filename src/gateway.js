@@ -46,9 +46,11 @@ export function classifyClose(code) {
   return "resume";
 }
 
-// Exponential backoff: min(60s, 1s * 2^attempt) + 0-1000ms jitter.
+// Exponential backoff: min(60s, 5s * 2^attempt) + 0-1000ms jitter.
+// The 5s base respects Discord's 1-identify-per-5s limit so a reconnect
+// can never trip the 4008 rate-limit loop on its own.
 export function reconnectDelay(attempt) {
-  const base = Math.min(60_000, 1000 * 2 ** attempt);
+  const base = Math.min(60_000, 5000 * 2 ** attempt);
   return base + Math.random() * 1000;
 }
 

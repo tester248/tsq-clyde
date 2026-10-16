@@ -22,10 +22,11 @@
       {
         "name": "CONVERSATION_DO",
         "class_name": "ConversationDO"
+      },
+      {
+        "name": "GATEWAY_DO",
+        "class_name": "GatewayDO"
       }
-      // GATEWAY_DO binding temporarily removed (v3 deletes the class) to
-      // destroy the runaway pre-guard gateway instance that pins itself via
-      // its own reconnect storm. Restored in v4.
     ]
   },
   // Mirrors the live migration state (tag v1). Secrets (DISCORD_TOKEN,
@@ -49,6 +50,12 @@
       // so new deploys can't take over). Data loss is nil: no session was
       // ever established. v4 re-creates the class.
       "deleted_classes": ["GatewayDO"]
+    },
+    {
+      "tag": "v4",
+      // Re-creates GatewayDO after the v3 teardown. Fresh namespace, guarded
+      // connect path (single socket, single chain).
+      "new_sqlite_classes": ["GatewayDO"]
     }
   ]
 }
