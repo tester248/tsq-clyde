@@ -43,6 +43,7 @@ export class GatewayDO {
     this.fatal = false;
     this.alarmSet = false;
     this.inflight = new Map(); // channel_id -> promise chain (per-channel serialization)
+    this.events = []; // in-memory lifecycle ring buffer, surfaced via /status
     this.status = {
       state: "idle",
       guilds: 0,
@@ -54,7 +55,11 @@ export class GatewayDO {
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/status") {
-      return Response.json(this.status);
+      return Response.json({
+        ...this.status,
+        socketOpen: !!this.socket,
+        recent: this.events.slice(-10),
+      });
     }
     if (request.method === "POST" && url.pathname === "/wake") {
       await this.#ensureAlarm();
@@ -109,6 +114,11 @@ export class GatewayDO {
       .catch((err) => console.error("gateway status persist failed", err));
   }
 
+  #event(type, detail = {}) {
+    this.events.push({ at: Date.now(), type, ...detail });
+    if (this.events.length > 30) this.events.shift();
+  }
+
   #send(frame) {
     try {
       this.socket?.send(JSON.stringify(frame));
@@ -128,6 +138,7 @@ export class GatewayDO {
       const canResume = resumePreferred && this.session?.sessionId;
       const url = canResume ? this.session.resumeUrl || GATEWAY_URL : GATEWAY_URL;
       console.log(`gateway connecting (resume=${!!canResume})`);
+      this.#event("connecting", { resume: !!canResume });
       const ws = this.deps.createSocket(url);
       this.socket = ws;
       ws.addEventListener("message", (event) => void this.#onSocketMessage(event));
@@ -190,9 +201,11 @@ export class GatewayDO {
         return;
       case 7: // RECONNECT requested by Discord — resume.
         console.log("gateway RECONNECT requested by Discord, resuming");
+        this.#event("op7");
         return this.#reconnect(true);
       case 9: // INVALID SESSION
         console.log(`gateway INVALID SESSION resumable=${msg.d}`);
+        this.#event("op9", { resumable: msg.d });
         return this.#onInvalidSession(msg.d);
       case 0:
         return this.#onDispatch(msg.t, msg.d);
@@ -205,6 +218,7 @@ export class GatewayDO {
     this.heartbeatIntervalMs = d.heartbeat_interval;
     const resuming = !!this.session?.sessionId;
     console.log(`gateway HELLO, heartbeat=${this.heartbeatIntervalMs}ms, resuming=${resuming}`);
+    this.#event("hello", { interval: this.heartbeatIntervalMs, resuming });
     const token = this.env.DISCORD_TOKEN;
     if (this.session?.sessionId) {
       this.#send(resumePayload(token, this.session.sessionId, this.seq));
@@ -223,6 +237,7 @@ export class GatewayDO {
   #onHeartbeatTick() {
     if (!this.heartbeatAcked) {
       // Zombie: a full interval passed with no ACK. Drop it and resume.
+      this.#event("zombie");
       this.#reconnect(true);
       return;
     }
@@ -245,6 +260,7 @@ export class GatewayDO {
     this.#disconnect();
     const action = classifyClose(code);
     console.log(`gateway socket closed code=${code} action=${action}`);
+    this.#event("close", { code, action });
     this.#setStatus({ closeCode: code });
     if (action === "fatal") {
       this.fatal = true;
@@ -271,6 +287,7 @@ export class GatewayDO {
       await this.#saveSession();
       this.reconnectAttempt = 0;
       console.log(`gateway READY session=${data.session_id} guilds=${data.guilds?.length ?? 0}`);
+      this.#event("ready", { guilds: data.guilds?.length ?? 0 });
       if (data.user?.id && this.env.LAST_MESSAGE_KV) {
         try {
           await this.env.LAST_MESSAGE_KV.put("discord_bot_id", data.user.id);
