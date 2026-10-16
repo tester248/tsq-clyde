@@ -39,7 +39,9 @@
     },
     {
       "tag": "v2",
-      "new_classes": ["GatewayDO"]
+      // SQLite-backed namespace: required for new classes on Workers Free.
+      // (v1 stays as-is — it was applied to the live worker already.)
+      "new_sqlite_classes": ["GatewayDO"]
     }
   ]
 }
