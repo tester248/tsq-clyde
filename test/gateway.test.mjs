@@ -43,6 +43,10 @@ describe("gateway protocol helpers", () => {
     assert.equal(p.d.intents, 513);
     assert.deepEqual(p.d.shard, [0, 1]);
     assert.equal(p.d.presence.status, "online");
+    // properties is required: Discord op-9s every identify without it.
+    assert.ok(p.d.properties.os.length > 0);
+    assert.ok(p.d.properties.browser.length > 0);
+    assert.ok(p.d.properties.device.length > 0);
   });
 
   it("resumePayload and heartbeatPayload carry session/seq through", () => {

@@ -14,6 +14,13 @@ export function identifyPayload(token) {
     op: 2,
     d: {
       token,
+      // Required by the gateway: without properties Discord cannot
+      // initialize the session and answers every identify with op 9.
+      properties: {
+        os: "cloudflare-workers",
+        browser: "tsq-klyde",
+        device: "tsq-klyde",
+      },
       intents: INTENTS,
       shard: [0, 1],
       presence: {
