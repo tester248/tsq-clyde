@@ -3,8 +3,10 @@
 import { Router } from "itty-router";
 import { handleDiscordInteraction } from "./discord.js";
 import { processMessage } from "./processor.js";
+import { stripMention } from "./gateway.js";
 
 export { ConversationDO } from "./conversation_do.js";
+export { GatewayDO } from "./gateway_do.js";
 
 const router = Router();
 
@@ -21,8 +23,33 @@ router.post("/discord/interactions", async (request, env, ctx) => {
 
 router.get("/health", () => new Response("ok"));
 
+function gatewayStub(env) {
+  const id = env.GATEWAY_DO.idFromName("gateway");
+  return env.GATEWAY_DO.get(id);
+}
+
+router.get("/gateway/status", async (request, env) => {
+  const stub = gatewayStub(env);
+  return await stub.fetch("https://gateway/status");
+});
+
+router.post("/gateway/connect", async (request, env) => {
+  const stub = gatewayStub(env);
+  return await stub.fetch("https://gateway/connect", { method: "POST" });
+});
+
 export default {
   async fetch(request, env, ctx) {
+    // Wake-on-fetch: any HTTP hit re-arms the gateway watchdog and heals a
+    // missing socket. Fire-and-forget with errors swallowed so a gateway
+    // outage can never break slash commands or health checks.
+    if (env.GATEWAY_DO) {
+      const wake = gatewayStub(env)
+        .fetch("https://gateway/wake", { method: "POST" })
+        .then(() => undefined)
+        .catch((err) => console.error("gateway wake failed", err));
+      ctx.waitUntil?.(wake);
+    }
     const response = await router.handle(request, env, ctx);
     return response ?? new Response("not found", { status: 404 });
   },
@@ -61,12 +88,6 @@ async function resolveBotId(env) {
   return botId;
 }
 
-function stripBotMention(content, botId) {
-  if (!botId) return content.trim();
-  const mention = new RegExp(`<@!?${botId}>`, "g");
-  return content.replace(mention, "").replace(/\s+/g, " ").trim();
-}
-
 async function pollChannel(channel_id, env) {
   const botId = await resolveBotId(env);
   const lastKey = `last_${channel_id}`;
@@ -93,7 +114,7 @@ async function pollChannel(channel_id, env) {
       ? msg.referenced_message?.author?.id === botId
       : !!msg.referenced_message?.author?.bot;
     if (mentionsBot || isReplyToBot) {
-      const content = stripBotMention(msg.content || "", botId);
+      const content = stripMention(msg.content || "", botId);
       const prompt = content || "Please continue.";
       await processMessage(
         { channel_id, guild_id: msg.guild_id, user_id: msg.author.id, content: prompt },
