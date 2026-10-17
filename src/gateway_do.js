@@ -313,19 +313,17 @@ export class GatewayDO {
   }
 
   #handleGatewayMessage(msg) {
-    // Sync resolution only: env secret or the READY-provided id. No network
-    // on the socket hot path; without an id we safely handle nothing.
     const botId = this.env.DISCORD_BOT_ID || this.session?.botId;
     const verdict = shouldHandleMessage(msg, botId);
+    console.log(
+      `gateway MESSAGE_CREATE id=${msg.id} channel=${msg.channel_id} handle=${verdict.handle}` +
+        (verdict.handle ? ` prompt="${verdict.prompt.slice(0, 60)}"` : "")
+    );
     if (!verdict.handle) return;
-    // Per-channel serialization: chain onto the in-flight tail so two rapid
-    // mentions never run overlapping Groq calls for the same channel.
     const key = msg.channel_id;
     const prev = this.inflight.get(key) ?? Promise.resolve();
     const next = prev.catch(() => {}).then(() => this.#answerMention(msg, verdict.prompt));
     this.inflight.set(key, next);
-    // Detached from socket processing: a slow LLM call must never stall
-    // heartbeats. waitUntil also keeps the DO alive for the duration.
     this.ctx.waitUntil(
       next.finally(() => {
         if (this.inflight.get(key) === next) this.inflight.delete(key);
@@ -334,19 +332,34 @@ export class GatewayDO {
   }
 
   async #answerMention(msg, prompt) {
+    const started = Date.now();
+    console.log(`gateway answering channel=${msg.channel_id} msg=${msg.id}`);
     try {
-      // No `interaction`: processMessage posts the reply via REST itself.
-      await processMessage(
-        {
-          channel_id: msg.channel_id,
-          guild_id: msg.guild_id,
-          user_id: msg.author?.id,
-          content: prompt,
-        },
-        this.env
-      );
+      // Hard cap so a hung Groq/DO call can never stall the per-channel
+      // serialization chain (which would silently kill all later mentions).
+      let timer;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("mention timeout")), 45_000);
+      });
+      try {
+        await Promise.race([
+          processMessage(
+            {
+              channel_id: msg.channel_id,
+              guild_id: msg.guild_id,
+              user_id: msg.author?.id,
+              content: prompt,
+            },
+            this.env
+          ),
+          timeoutPromise,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      console.log(`gateway answered channel=${msg.channel_id} in ${Date.now() - started}ms`);
     } catch (err) {
-      console.error("gateway mention reply failed", err);
+      console.error(`gateway mention reply failed (${Date.now() - started}ms)`, err?.message || err);
     }
     try {
       await this.env.LAST_MESSAGE_KV.put(`last_${msg.channel_id}`, msg.id);

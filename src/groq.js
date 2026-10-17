@@ -20,14 +20,22 @@ export async function callGroqModel(model, messages, apiKey) {
     max_tokens: 700,
     temperature: 0.7
   };
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25_000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`Groq request failed: ${res.status} ${txt}`);
