@@ -43,6 +43,7 @@ export class GatewayDO {
     this.fatal = false;
     this.alarmSet = false;
     this.inflight = new Map(); // channel_id -> promise chain (per-channel serialization)
+    this.lastMessage = null; // last MESSAGE_CREATE seen (for ops debugging)
     this.events = []; // in-memory lifecycle ring buffer, surfaced via /status
     this.status = {
       state: "idle",
@@ -58,6 +59,8 @@ export class GatewayDO {
       return Response.json({
         ...this.status,
         socketOpen: !!this.socket,
+        inflight: this.inflight.size,
+        lastMessage: this.lastMessage,
         recent: this.events.slice(-10),
       });
     }
@@ -315,6 +318,14 @@ export class GatewayDO {
   #handleGatewayMessage(msg) {
     const botId = this.env.DISCORD_BOT_ID || this.session?.botId;
     const verdict = shouldHandleMessage(msg, botId);
+    this.lastMessage = {
+      id: msg.id,
+      channel: msg.channel_id,
+      author: msg.author?.id,
+      handle: verdict.handle,
+      prompt: verdict.handle ? verdict.prompt.slice(0, 80) : null,
+      at: Date.now(),
+    };
     console.log(
       `gateway MESSAGE_CREATE id=${msg.id} channel=${msg.channel_id} handle=${verdict.handle}` +
         (verdict.handle ? ` prompt="${verdict.prompt.slice(0, 60)}"` : "")
@@ -334,6 +345,7 @@ export class GatewayDO {
   async #answerMention(msg, prompt) {
     const started = Date.now();
     console.log(`gateway answering channel=${msg.channel_id} msg=${msg.id}`);
+    this.lastMessage = { ...(this.lastMessage || {}), answering: true, startedAt: started };
     try {
       // Hard cap so a hung Groq/DO call can never stall the per-channel
       // serialization chain (which would silently kill all later mentions).
@@ -358,8 +370,10 @@ export class GatewayDO {
         clearTimeout(timer);
       }
       console.log(`gateway answered channel=${msg.channel_id} in ${Date.now() - started}ms`);
+      this.lastMessage = { ...(this.lastMessage || {}), answered: true, durationMs: Date.now() - started };
     } catch (err) {
       console.error(`gateway mention reply failed (${Date.now() - started}ms)`, err?.message || err);
+      this.lastMessage = { ...(this.lastMessage || {}), failed: true, error: String(err?.message || err), durationMs: Date.now() - started };
     }
     try {
       await this.env.LAST_MESSAGE_KV.put(`last_${msg.channel_id}`, msg.id);
