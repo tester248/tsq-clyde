@@ -22,12 +22,9 @@
       {
         "name": "CONVERSATION_DO",
         "class_name": "ConversationDO"
-      },
-      {
-        "name": "GATEWAY_DO",
-        "class_name": "GatewayDO"
       }
-      // (binding restored with v6 after the v5 teardown)
+      // GATEWAY_DO binding removed for v7 (delete-class needs no binding),
+      // restored with v8.
     ]
   },
   // Mirrors the live migration state (tag v1). Secrets (DISCORD_TOKEN,
@@ -70,6 +67,14 @@
       "tag": "v6",
       // Fresh namespace on the fixed code (identify now carries the
       // required properties). Single POST /connect starts it.
+      "new_sqlite_classes": ["GatewayDO"]
+    },
+    {
+      "tag": "v7",
+      "deleted_classes": ["GatewayDO"]
+    },
+    {
+      "tag": "v8",
       "new_sqlite_classes": ["GatewayDO"]
     }
   ]
