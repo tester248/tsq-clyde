@@ -1,6 +1,6 @@
 // Message processing: conversation state (per-channel Durable Object) + Groq replies.
 
-import { selectModel, callGroqModel, summarizeConversation } from "./groq.js";
+import { MODELS, selectModel, callGroqModel, summarizeConversation } from "./groq.js";
 import { sendChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
@@ -47,7 +47,7 @@ export async function processMessage(context, env) {
       method: "POST",
       body: JSON.stringify({ summary: summaryRes.text })
     });
-    const summaryModel = "llama-3.1-8b-instant";
+    const summaryModel = MODELS[1];
     await stub.fetch("https://example.com/recordUsage", {
       method: "POST",
       body: JSON.stringify({ model: summaryModel, tokens: summaryRes.tokens })

@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "dry-run": "wrangler deploy --dry-run",
-    "test": "node --test test/gateway.test.mjs test/gateway_do.test.mjs test/worker.test.mjs test/conversation.test.mjs"
+    "test": "node --test test/gateway.test.mjs test/gateway_do.test.mjs test/groq.test.mjs test/worker.test.mjs test/conversation.test.mjs"
   },
   "dependencies": {
     "itty-router": "^4"
