@@ -1,12 +1,16 @@
 // Groq API helpers (reconstructed from the deployed bundle).
 
-// Both entries must be text chat models served on /v1/chat/completions.
+// Every entry must be a text chat model served on /v1/chat/completions.
 // Whisper (whisper-large-v3*) is speech-to-text only: no context window, no
 // text output. Selecting it for a chat reply guarantees a 4xx on every call.
-export const MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
+//
+// [0] primary while quota remains, [1] fallback once it runs out. Different
+// quotas are desirable here so one provider bucket exhausting does not also
+// silence the other.
+export const MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"];
 const FREE_TOKEN_QUOTA = 100000;
 
-// Primary model while quota remains; smaller/cheaper chat model after.
+// Primary model while quota remains; fallback chat model after.
 export function selectModel(modelUsage) {
   const used = Object.values(modelUsage).reduce((a, b) => a + b, 0);
   const remaining = FREE_TOKEN_QUOTA - used;

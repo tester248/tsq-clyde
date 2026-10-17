@@ -9,6 +9,7 @@ import { MODELS, selectModel } from "../src/groq.js";
 const CHAT_MODELS = new Set([
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
+  "qwen/qwen3.8-27b",
   "llama-3.1-8b-instant",
   "llama-3.3-70b-versatile",
 ]);
@@ -26,8 +27,9 @@ describe("selectModel", () => {
     assert.equal(selectModel({ a: 99000 }), MODELS[0]);
   });
 
-  it("falls back to another chat model, never a speech model, when exhausted", () => {
+  it("falls back to qwen, never a speech model, when exhausted", () => {
     const fallback = selectModel({ a: 99001 });
+    assert.equal(fallback, "qwen/qwen3.8-27b");
     assert.notEqual(fallback, MODELS[0]);
     assert.ok(CHAT_MODELS.has(fallback), `fallback ${fallback} is not a chat model`);
     assert.ok(!fallback.startsWith("whisper"));
@@ -38,5 +40,11 @@ describe("selectModel", () => {
       const m = selectModel({ a: used });
       assert.ok(CHAT_MODELS.has(m), `usage ${used} selected ${m}`);
     }
+  });
+
+  it("switches exactly at the quota threshold", () => {
+    assert.equal(selectModel({ a: 98999 }), "openai/gpt-oss-120b");
+    assert.equal(selectModel({ a: 99000 }), "openai/gpt-oss-120b");
+    assert.equal(selectModel({ a: 99001 }), "qwen/qwen3.8-27b");
   });
 });
