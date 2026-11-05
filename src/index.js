@@ -51,6 +51,9 @@ router.get("/ai/selfcheck", async (request, env) => {
 router.get("/ai/agentcheck", async (request, env) => {
   try {
     let toolNames = [];
+    // Optional ?provider=exa,tavily override for verifying a provider order.
+    const providerParam = new URL(request.url).searchParams.get("provider");
+    const checkEnv = providerParam ? { ...env, SEARCH_PROVIDER: providerParam } : env;
     const result = await runAgentLoop({
       messages: [
         {
@@ -58,7 +61,7 @@ router.get("/ai/agentcheck", async (request, env) => {
           content: "Find out what the latest Minecraft update added, and answer in one sentence.",
         },
       ],
-      env,
+      env: checkEnv,
       onTool: (name) => toolNames.push(name),
     });
     return Response.json({
@@ -68,6 +71,7 @@ router.get("/ai/agentcheck", async (request, env) => {
       truncated: result.truncated,
       text: result.text.slice(0, 200),
       totalTokens: result.totalTokens,
+      searchProvider: providerParam || "default",
     });
   } catch (err) {
     return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
