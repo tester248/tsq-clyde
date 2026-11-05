@@ -1,6 +1,7 @@
 // Message processing: conversation state (per-channel Durable Object) + AI replies.
 
-import { generateReply, summarizeConversation } from "./ai.js";
+import { summarizeConversation } from "./ai.js";
+import { runAgentLoop } from "./agent.js";
 import { sendChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
@@ -63,7 +64,19 @@ export async function processMessage(context, env) {
   updatedState.history.forEach((h) => messages.push({ role: h.role, content: h.content }));
   messages.push({ role: "user", content: context.content });
 
-  const aiRes = await generateReply(messages, env);
+  // Interim feedback: when a tool first fires, tell the user we're working
+  // on it. Only for non-interaction channel messages (avoid a reply to a
+  // slash-deferred command).
+  let sentFeedback = false;
+  const onTool = () => {
+    if (!sentFeedback && !context.interaction && context.channel_id) {
+      sentFeedback = true;
+      // fire-and-forget; never block the loop on a status message
+      sendChannelMessage(context.channel_id, "searching… 🔎", env).catch(() => {});
+    }
+  };
+
+  const aiRes = await runAgentLoop({ messages, env, onTool });
 
   const assistantEntry = {
     role: "assistant",
@@ -76,7 +89,7 @@ export async function processMessage(context, env) {
   });
   await stub.fetch("https://example.com/recordUsage", {
     method: "POST",
-    body: JSON.stringify({ model: aiRes.provider, tokens: aiRes.tokens })
+    body: JSON.stringify({ model: aiRes.provider, tokens: aiRes.totalTokens })
   });
 
   if (!context.interaction && context.channel_id) {

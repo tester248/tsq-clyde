@@ -1,0 +1,74 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+
+import { processMessage } from "../src/processor.js";
+import { ConversationDO } from "../src/conversation_do.js";
+
+function makeConvo() {
+  const mem = new Map();
+  return new ConversationDO(
+    {
+      storage: {
+        get: async (k) => mem.get(k) ?? null,
+        put: async (k, v) => void mem.set(k, v),
+      },
+    },
+    {}
+  );
+}
+
+function makeEnv(overrides = {}) {
+  const convo = makeConvo();
+  const kv = new Map();
+  return {
+    env: {
+      INCEPTION_API_KEY: "test-inception-key",
+      GROQ_API_KEY: "test-groq-key",
+      TAVILY_API_KEY: "test-tavily-key",
+      CONVERSATION_DO: {
+        idFromName: (n) => n,
+        get: () => ({ fetch: (url, init) => convo.fetch(new Request(url, init)) }),
+      },
+      LAST_MESSAGE_KV: {
+        get: async (k) => kv.get(k) ?? null,
+        put: async (k, v) => void kv.set(k, v),
+      },
+      ...overrides,
+    },
+    kv,
+  };
+}
+
+describe("processMessage agent path", () => {
+  it("returns reply + provider for a normal (no-tool) message", async () => {
+    const realFetch = globalThis.fetch;
+    const discordPosts = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        // Mercury returns a plain text answer.
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "plain answer" } }],
+          usage: { total_tokens: 5 },
+        });
+      }
+      if (u.includes("discord.com/api")) {
+        discordPosts.push(u);
+        return Response.json({ id: "mid" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env } = makeEnv();
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "hello" },
+        env
+      );
+      assert.equal(out.reply, "plain answer");
+      assert.equal(out.provider, "inception");
+      assert.equal(discordPosts.length, 1); // non-interaction posts to channel
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
