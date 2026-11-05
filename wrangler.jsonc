@@ -11,6 +11,11 @@
   "ai": {
     "binding": "AI"
   },
+  "vars": {
+    // Non-secret toggle: when "true", replies to a mention also ping the
+    // author; default off to avoid pinging spam.
+    "PING_AUTHOR": "false"
+  },
   // No cron trigger: the old 1-minute @mention poller generated ~14k
   // requests/day and is superseded by the planned gateway Durable Object
   // (live Discord events instead of polling). The scheduled() handler in

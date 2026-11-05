@@ -2,7 +2,7 @@
 
 import { generateReply, summarizeConversation } from "./ai.js";
 import { runAgentLoop, shouldUseAgentTools } from "./agent.js";
-import { sendChannelMessage } from "./discord.js";
+import { sendChannelMessage, deleteChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
 
@@ -14,17 +14,35 @@ const PHASE_MESSAGES = {
 };
 
 // Returns a throttled status sender: sends a message at most once per phase,
-// and only if `allow` is true (i.e. a non-interaction channel).
-export function createStatusSender({ channel, allow }) {
+// and only if `allow` is true (i.e. a non-interaction channel). Each sent
+// message's id is captured; `cleanup()` deletes them (e.g. after the final
+// answer posts) — best-effort, errors swallowed.
+export function createStatusSender({ channel, allow, deleteMessage }) {
   const emitted = new Set();
-  return (phase) => {
+  const sentIds = [];
+  const send = (phase) => {
     if (!allow || !channel) return;
     if (emitted.has(phase)) return;
     emitted.add(phase);
     const text = PHASE_MESSAGES[phase] || "working on it… ⏳";
     // fire-and-forget; never block the loop on a status message
-    channel.send(text).catch(() => {});
+    return channel
+      .send(text)
+      .then((created) => {
+        if (created && created.id) sentIds.push(created.id);
+      })
+      .catch(() => {});
   };
+  const cleanup = async () => {
+    for (const id of sentIds.splice(0)) {
+      try {
+        if (deleteMessage) await deleteMessage(id);
+      } catch {
+        // best-effort
+      }
+    }
+  };
+  return { send, cleanup };
 }
 
 export async function processMessage(context, env) {
@@ -94,19 +112,21 @@ export async function processMessage(context, env) {
   // Fast path: for greetings/trivial pings, answer directly without the tool
   // loop so they stay instant and never trigger a search.
   let aiRes;
+  let sendStatus = null;
   if (!shouldUseAgentTools(context.content)) {
     aiRes = await generateReply(messages, env);
     aiRes = { ...aiRes, totalTokens: aiRes.tokens };
   } else {
     // Progressive feedback: surface search -> fetch -> compose as staged
     // status messages, throttled per phase. Non-interaction channels only.
-    const sendStatus = createStatusSender({
+    sendStatus = createStatusSender({
       channel: {
         send: (text) => sendChannelMessage(context.channel_id, text, env),
       },
+      deleteMessage: (id) => deleteChannelMessage(context.channel_id, id, env),
       allow: !context.interaction && !!context.channel_id,
     });
-    aiRes = await runAgentLoop({ messages, env, onPhase: sendStatus });
+    aiRes = await runAgentLoop({ messages, env, onPhase: sendStatus.send });
   }
 
   const assistantEntry = {
@@ -130,6 +150,12 @@ export async function processMessage(context, env) {
       sendOpts.pingAuthor = env.PING_AUTHOR === "true";
     }
     await sendChannelMessage(context.channel_id, aiRes.text, env, sendOpts);
+  }
+
+  // Best-effort: remove the interim status messages now that the final
+  // answer is up. Errors are swallowed inside cleanup.
+  if (sendStatus) {
+    await sendStatus.cleanup().catch(() => {});
   }
 
   return { reply: aiRes.text, provider: aiRes.provider };
