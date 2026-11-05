@@ -2,6 +2,17 @@
 // never throws, so the loop can feed failures back to the model.
 
 const FETCH_MAX_BYTES = 64 * 1024;
+const TOOL_TIMEOUT_MS = 15_000;
+
+async function fetchWithToolTimeout(url, init) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const searchTool = {
   type: "function",
@@ -40,7 +51,7 @@ export const AGENT_TOOLS = [searchTool, fetchUrlTool];
 async function tavilySearch(query, numResults, env) {
   const key = env.TAVILY_API_KEY;
   if (!key) return { error: "TAVILY_API_KEY not configured" };
-  const res = await fetch("https://api.tavily.com/search", {
+  const res = await fetchWithToolTimeout("https://api.tavily.com/search", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -63,7 +74,7 @@ async function tavilySearch(query, numResults, env) {
 async function exaSearch(query, numResults, env) {
   const key = env.EXA_API_KEY;
   if (!key) return { error: "EXA_API_KEY not configured" };
-  const res = await fetch("https://api.exa.ai/search", {
+  const res = await fetchWithToolTimeout("https://api.exa.ai/search", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -139,7 +150,7 @@ async function fetchUrl(url, env) {
     return { error: `unsupported protocol: ${parsed.protocol}` };
   }
   try {
-    const res = await fetch(parsed.toString(), { redirect: "follow" });
+    const res = await fetchWithToolTimeout(parsed.toString(), { redirect: "follow" });
     if (!res.ok) return { error: `fetch failed: ${res.status}` };
     const buf = await res.arrayBuffer();
     if (buf.byteLength > FETCH_MAX_BYTES) return { error: "response too large" };

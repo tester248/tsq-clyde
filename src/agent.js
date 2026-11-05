@@ -11,7 +11,10 @@ const AGENT_SYSTEM_HINT = {
   content:
     "You may use the provided tools to retrieve current information. " +
     "Only call a tool when your knowledge may be outdated or incomplete. " +
-    "If you already know the answer, reply directly without calling any tool.",
+    "If you already know the answer, reply directly without calling any tool. " +
+    "Replies are sent to a Discord channel with a 2000-character limit: keep " +
+    "your answer concise, under ~1800 characters, and prefer tight bullet " +
+    "points or a short paragraph over exhaustive detail.",
 };
 
 // Fast-path heuristic: skip the tool loop entirely for greetings and trivial
@@ -35,9 +38,10 @@ export async function runAgentLoop({
   tools = AGENT_TOOLS,
   executeTool = defaultExecuteTool,
   maxIterations = 6,
-  budgetMs = 45_000,
+  budgetMs = 90_000,
   llm = callLLM,
   onTool,
+  onPhase,
 }) {
   const started = Date.now();
   let current = [...messages];
@@ -46,10 +50,22 @@ export async function runAgentLoop({
   if (!hasSystem) current.unshift(AGENT_SYSTEM_HINT);
   let totalTokens = 0;
   let lastAssistantText = "";
+  let usedTools = false;
+
+  const emitPhase = (p) => {
+    if (onPhase) {
+      try {
+        onPhase(p);
+      } catch {
+        // best-effort
+      }
+    }
+  };
 
   for (let i = 0; i < maxIterations; i++) {
     if (Date.now() - started > budgetMs) break;
 
+    if (usedTools) emitPhase("compose");
     const { message, provider, tokens } = await llm(current, env, { tools });
     totalTokens += tokens;
     current.push(message);
@@ -75,6 +91,8 @@ export async function runAgentLoop({
       } catch {
         args = {};
       }
+      usedTools = true;
+      emitPhase(name === "fetch_url" ? "fetch" : "search");
       if (onTool) {
         try {
           onTool(name, args);

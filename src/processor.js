@@ -6,6 +6,27 @@ import { sendChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
 
+// Phase -> human status message for progressive feedback (Gemini-style).
+const PHASE_MESSAGES = {
+  search: "searching the web… 🔎",
+  fetch: "reading sources… 📄",
+  compose: "composing your answer… ✍️",
+};
+
+// Returns a throttled status sender: sends a message at most once per phase,
+// and only if `allow` is true (i.e. a non-interaction channel).
+export function createStatusSender({ channel, allow }) {
+  const emitted = new Set();
+  return (phase) => {
+    if (!allow || !channel) return;
+    if (emitted.has(phase)) return;
+    emitted.add(phase);
+    const text = PHASE_MESSAGES[phase] || "working on it… ⏳";
+    // fire-and-forget; never block the loop on a status message
+    channel.send(text).catch(() => {});
+  };
+}
+
 export async function processMessage(context, env) {
   const key = context.channel_id || context.guild_id || "global";
   const id = env.CONVERSATION_DO.idFromName(key);
@@ -71,18 +92,15 @@ export async function processMessage(context, env) {
     aiRes = await generateReply(messages, env);
     aiRes = { ...aiRes, totalTokens: aiRes.tokens };
   } else {
-    // Interim feedback: when a tool first fires, tell the user we're working
-    // on it. Only for non-interaction channel messages (avoid a reply to a
-    // slash-deferred command).
-    let sentFeedback = false;
-    const onTool = () => {
-      if (!sentFeedback && !context.interaction && context.channel_id) {
-        sentFeedback = true;
-        // fire-and-forget; never block the loop on a status message
-        sendChannelMessage(context.channel_id, "searching… 🔎", env).catch(() => {});
-      }
-    };
-    aiRes = await runAgentLoop({ messages, env, onTool });
+    // Progressive feedback: surface search -> fetch -> compose as staged
+    // status messages, throttled per phase. Non-interaction channels only.
+    const sendStatus = createStatusSender({
+      channel: {
+        send: (text) => sendChannelMessage(context.channel_id, text, env),
+      },
+      allow: !context.interaction && !!context.channel_id,
+    });
+    aiRes = await runAgentLoop({ messages, env, onPhase: sendStatus });
   }
 
   const assistantEntry = {

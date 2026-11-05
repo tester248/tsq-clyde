@@ -39,13 +39,15 @@ export async function verifyDiscordRequest(headers, rawBody, publicKeyHex) {
 
 export async function sendChannelMessage(channel_id, content, env) {
   const url = `${DISCORD_API_BASE}/channels/${channel_id}/messages`;
+  // Discord's message limit is 2000; hard-truncate to be safe.
+  const safeContent = content.length > 1900 ? `${content.slice(0, 1900)}...` : content;
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Authorization": `Bot ${env.DISCORD_TOKEN}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ content })
+    body: JSON.stringify({ content: safeContent })
   });
   if (!res.ok) {
     const txt = await res.text();
