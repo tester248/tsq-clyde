@@ -1,6 +1,6 @@
-// Message processing: conversation state (per-channel Durable Object) + Groq replies.
+// Message processing: conversation state (per-channel Durable Object) + AI replies.
 
-import { MODELS, selectModel, callGroqModel, summarizeConversation } from "./groq.js";
+import { generateReply, summarizeConversation } from "./ai.js";
 import { sendChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
@@ -42,22 +42,20 @@ export async function processMessage(context, env) {
 
   if (state.tokenCount > MAX_HISTORY_TOKENS) {
     const histMessages = state.history.map((h) => ({ role: h.role, content: h.content }));
-    const summaryRes = await summarizeConversation(histMessages, env.GROQ_API_KEY);
+    const summaryRes = await summarizeConversation(histMessages, env);
     await stub.fetch("https://example.com/setSummary", {
       method: "POST",
       body: JSON.stringify({ summary: summaryRes.text })
     });
-    const summaryModel = MODELS[1];
     await stub.fetch("https://example.com/recordUsage", {
       method: "POST",
-      body: JSON.stringify({ model: summaryModel, tokens: summaryRes.tokens })
+      body: JSON.stringify({ model: summaryRes.provider, tokens: summaryRes.tokens })
     });
   }
 
   const updatedResp = await stub.fetch("https://example.com/get");
   const updatedState = await updatedResp.json();
 
-  const model = env.GROQ_MODEL || selectModel(updatedState.modelUsage);
   const messages = [];
   if (updatedState.summary) {
     messages.push({ role: "system", content: `Summary of previous conversation: ${updatedState.summary}` });
@@ -65,11 +63,11 @@ export async function processMessage(context, env) {
   updatedState.history.forEach((h) => messages.push({ role: h.role, content: h.content }));
   messages.push({ role: "user", content: context.content });
 
-  const groqRes = await callGroqModel(model, messages, env.GROQ_API_KEY);
+  const aiRes = await generateReply(messages, env);
 
   const assistantEntry = {
     role: "assistant",
-    content: groqRes.text,
+    content: aiRes.text,
     timestamp: Date.now()
   };
   await stub.fetch("https://example.com/append", {
@@ -78,12 +76,12 @@ export async function processMessage(context, env) {
   });
   await stub.fetch("https://example.com/recordUsage", {
     method: "POST",
-    body: JSON.stringify({ model, tokens: groqRes.tokens })
+    body: JSON.stringify({ model: aiRes.provider, tokens: aiRes.tokens })
   });
 
   if (!context.interaction && context.channel_id) {
-    await sendChannelMessage(context.channel_id, groqRes.text, env);
+    await sendChannelMessage(context.channel_id, aiRes.text, env);
   }
 
-  return { reply: groqRes.text };
+  return { reply: aiRes.text };
 }

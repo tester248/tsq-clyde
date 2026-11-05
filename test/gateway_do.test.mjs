@@ -84,6 +84,8 @@ function makeEnv() {
     env: {
       DISCORD_TOKEN: "test-token",
       DISCORD_BOT_ID: BOT_ID,
+      INCEPTION_API_KEY: "test-inception-key",
+      GROQ_API_KEY: "test-groq-key",
       CONVERSATION_DO: {
         idFromName: (n) => n,
         get: () => ({
