@@ -4,6 +4,7 @@ import { Router } from "itty-router";
 import { handleDiscordInteraction } from "./discord.js";
 import { processMessage } from "./processor.js";
 import { stripMention } from "./gateway.js";
+import { generateReply } from "./ai.js";
 
 export { ConversationDO } from "./conversation_do.js";
 export { GatewayDO } from "./gateway_do.js";
@@ -22,6 +23,26 @@ router.post("/discord/interactions", async (request, env, ctx) => {
 });
 
 router.get("/health", () => new Response("ok"));
+
+// AI self-check: exercises the real provider router against live secrets and
+// reports which provider answered. Useful for verifying a provider works
+// after a key change or deploy. Returns no secrets.
+router.get("/ai/selfcheck", async (request, env) => {
+  try {
+    const result = await generateReply(
+      [{ role: "user", content: "Reply with exactly: OK" }],
+      env
+    );
+    return Response.json({
+      ok: true,
+      provider: result.provider,
+      text: result.text.slice(0, 50),
+      tokens: result.tokens,
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
 
 function gatewayStub(env) {
   const id = env.GATEWAY_DO.idFromName("gateway");
