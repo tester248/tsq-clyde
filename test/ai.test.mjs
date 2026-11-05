@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { generateReply, summarizeConversation } from "../src/ai.js";
+import { generateReply, summarizeConversation, callLLM } from "../src/ai.js";
 
 function mockFetch(routes) {
   const realFetch = globalThis.fetch;
@@ -26,6 +26,24 @@ const json = (obj, status = 200) =>
 function completion(text, tokens = 10) {
   return {
     choices: [{ message: { content: text } }],
+    usage: { total_tokens: tokens },
+  };
+}
+
+// Helper: a completion with a tool call and no text content.
+function toolCompletion(name, args, tokens = 12) {
+  return {
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name, arguments: JSON.stringify(args) } },
+          ],
+        },
+      },
+    ],
     usage: { total_tokens: tokens },
   };
 }
@@ -143,6 +161,38 @@ describe("generateReply provider router", () => {
       );
       assert.equal(out.text, "summary text");
       assert.equal(out.provider, "inception");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("callLLM returns the raw assistant message including tool_calls", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(toolCompletion("search", { query: "mc update" }))],
+    ]);
+    try {
+      const out = await callLLM([{ role: "user", content: "what's new?" }], makeEnv());
+      assert.equal(out.provider, "inception");
+      assert.equal(out.message.role, "assistant");
+      assert.equal(out.message.content, null);
+      assert.ok(Array.isArray(out.message.tool_calls));
+      assert.equal(out.message.tool_calls[0].function.name, "search");
+      const body = JSON.parse(calls[0].init.body);
+      assert.ok(body.messages, "messages must be present");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("callLLM passes tools through to the provider when opts.tools set", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(completion("done"))],
+    ]);
+    try {
+      const tools = [{ type: "function", function: { name: "search" } }];
+      await callLLM([{ role: "user", content: "hi" }], makeEnv(), { tools });
+      const body = JSON.parse(calls[0].init.body);
+      assert.deepEqual(body.tools, tools);
     } finally {
       globalThis.fetch = realFetch;
     }

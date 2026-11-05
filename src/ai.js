@@ -38,29 +38,30 @@ async function openAiCompletion(url, model, messages, apiKey, extra = {}) {
     throw new Error(`${model} request failed: ${res.status} ${txt.slice(0, 200)}`);
   }
   const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || "";
+  const message = data.choices?.[0]?.message || null;
   const tokens = data.usage?.total_tokens || 0;
-  return { text, tokens };
+  return { message, tokens };
 }
 
-async function inceptionReply(messages, env) {
+async function inceptionReply(messages, env, extra = {}) {
   if (!env.INCEPTION_API_KEY) throw new Error("INCEPTION_API_KEY not configured");
   return openAiCompletion(
     "https://api.inceptionlabs.ai/v1/chat/completions",
     "mercury-3",
     messages,
     env.INCEPTION_API_KEY,
-    { reasoning_effort: "low" }
+    { reasoning_effort: "low", ...extra }
   );
 }
 
-async function groqReply(messages, env) {
+async function groqReply(messages, env, extra = {}) {
   if (!env.GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
   return openAiCompletion(
     "https://api.groq.com/openai/v1/chat/completions",
     "openai/gpt-oss-120b",
     messages,
-    env.GROQ_API_KEY
+    env.GROQ_API_KEY,
+    extra
   );
 }
 
@@ -73,7 +74,8 @@ async function workersAiReply(messages, env) {
   const text = result?.response ?? "";
   if (!text) throw new Error("Workers AI returned empty response");
   // Workers AI returns usage.neurons, not tokens; report tokens as 0.
-  return { text, tokens: 0, model };
+  // Workers AI has no tool-call support; return a plain assistant message.
+  return { message: { role: "assistant", content: text }, tokens: 0, model };
 }
 
 const PROVIDER_FNS = {
@@ -82,17 +84,22 @@ const PROVIDER_FNS = {
   "workers-ai": workersAiReply,
 };
 
-export async function generateReply(messages, env) {
+export async function callLLM(messages, env, opts = {}) {
   const failures = [];
   for (const name of PROVIDERS) {
     try {
-      const out = await PROVIDER_FNS[name](messages, env);
-      return { ...out, provider: name };
+      const out = await PROVIDER_FNS[name](messages, env, opts.tools ? { tools: opts.tools } : {});
+      return { message: out.message, provider: name, tokens: out.tokens };
     } catch (err) {
       failures.push(`${name}: ${err?.message || err}`);
     }
   }
   throw new Error(`all providers failed — ${failures.join(" | ")}`);
+}
+
+export async function generateReply(messages, env) {
+  const { message, provider, tokens } = await callLLM(messages, env);
+  return { text: message?.content ?? "", tokens, provider };
 }
 
 export async function summarizeConversation(history, env) {
