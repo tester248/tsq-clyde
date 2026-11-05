@@ -221,6 +221,8 @@ describe("GatewayDO", () => {
     assert.equal(discordPosts.length, 1);
     assert.ok(discordPosts[0].url.includes("/channels/C1/messages"));
     assert.equal(discordPosts[0].body.content, "mock reply 1");
+    assert.equal(discordPosts[0].body.message_reference.message_id, "MSG1");
+    assert.equal(discordPosts[0].body.allowed_mentions.replied_user, false);
     assert.equal(await kv.get("last_C1"), "MSG1");
   });
 

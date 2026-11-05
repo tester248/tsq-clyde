@@ -124,7 +124,12 @@ export async function processMessage(context, env) {
   });
 
   if (!context.interaction && context.channel_id) {
-    await sendChannelMessage(context.channel_id, aiRes.text, env);
+    const sendOpts = {};
+    if (context.message_id) {
+      sendOpts.replyTo = context.message_id;
+      sendOpts.pingAuthor = env.PING_AUTHOR === "true";
+    }
+    await sendChannelMessage(context.channel_id, aiRes.text, env, sendOpts);
   }
 
   return { reply: aiRes.text, provider: aiRes.provider };

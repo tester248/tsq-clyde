@@ -132,3 +132,71 @@ describe("processMessage author attribution", () => {
     }
   });
 });
+
+describe("processMessage reply threading", () => {
+  function mockFetch(discordBodies) {
+    return async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) {
+        discordBodies.push(JSON.parse(init.body));
+        return Response.json({ id: "mid" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+  }
+
+  it("threads under the mention when message_id is present, no ping by default", async () => {
+    const realFetch = globalThis.fetch;
+    const discordBodies = [];
+    globalThis.fetch = mockFetch(discordBodies);
+    try {
+      const { env } = makeEnv();
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", username: "Alice", message_id: "M1", content: "hi" },
+        env
+      );
+      assert.equal(discordBodies[0].message_reference.message_id, "M1");
+      assert.equal(discordBodies[0].allowed_mentions.replied_user, false);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("pings the author when PING_AUTHOR is true", async () => {
+    const realFetch = globalThis.fetch;
+    const discordBodies = [];
+    globalThis.fetch = mockFetch(discordBodies);
+    try {
+      const { env } = makeEnv({ PING_AUTHOR: "true" });
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", username: "Alice", message_id: "M1", content: "hi" },
+        env
+      );
+      assert.equal(discordBodies[0].allowed_mentions.replied_user, true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("does not thread when message_id absent", async () => {
+    const realFetch = globalThis.fetch;
+    const discordBodies = [];
+    globalThis.fetch = mockFetch(discordBodies);
+    try {
+      const { env } = makeEnv();
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "hi" },
+        env
+      );
+      assert.equal(discordBodies[0].message_reference, undefined);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

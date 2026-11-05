@@ -383,6 +383,8 @@ export class GatewayDO {
               channel_id: msg.channel_id,
               guild_id: msg.guild_id,
               user_id: msg.author?.id,
+              username: msg.author?.username,
+              message_id: msg.id,
               content: prompt,
             },
             this.env
