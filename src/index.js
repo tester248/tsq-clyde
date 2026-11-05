@@ -5,6 +5,7 @@ import { handleDiscordInteraction } from "./discord.js";
 import { processMessage } from "./processor.js";
 import { stripMention } from "./gateway.js";
 import { generateReply } from "./ai.js";
+import { runAgentLoop } from "./agent.js";
 
 export { ConversationDO } from "./conversation_do.js";
 export { GatewayDO } from "./gateway_do.js";
@@ -38,6 +39,35 @@ router.get("/ai/selfcheck", async (request, env) => {
       provider: result.provider,
       text: result.text.slice(0, 50),
       tokens: result.tokens,
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
+
+// Agent-check: exercises the real tool loop against live secrets and reports
+// whether the model used a tool and what it returned. Useful for verifying
+// the agent slice end-to-end without Discord.
+router.get("/ai/agentcheck", async (request, env) => {
+  try {
+    let toolNames = [];
+    const result = await runAgentLoop({
+      messages: [
+        {
+          role: "user",
+          content: "Find out what the latest Minecraft update added, and answer in one sentence.",
+        },
+      ],
+      env,
+      onTool: (name) => toolNames.push(name),
+    });
+    return Response.json({
+      ok: true,
+      provider: result.provider,
+      toolsUsed: toolNames,
+      truncated: result.truncated,
+      text: result.text.slice(0, 200),
+      totalTokens: result.totalTokens,
     });
   } catch (err) {
     return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
