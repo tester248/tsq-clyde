@@ -49,7 +49,6 @@ export async function runAgentLoop({
   const hasSystem = current.some((m) => m.role === "system");
   if (!hasSystem) current.unshift(AGENT_SYSTEM_HINT);
   let totalTokens = 0;
-  let lastAssistantText = "";
   let usedTools = false;
 
   const emitPhase = (p) => {
@@ -65,16 +64,17 @@ export async function runAgentLoop({
   for (let i = 0; i < maxIterations; i++) {
     if (Date.now() - started > budgetMs) break;
 
-    if (usedTools) emitPhase("compose");
     const { message, provider, tokens } = await llm(current, env, { tools });
     totalTokens += tokens;
     current.push(message);
-    if (message?.content) lastAssistantText = message.content;
 
     const calls = message?.tool_calls || [];
+    // A message WITH tool_calls is narration/planning, not a final answer.
+    // Only a message with no pending tool calls is a genuine reply.
     if (calls.length === 0) {
+      if (usedTools) emitPhase("compose");
       return {
-        text: lastAssistantText,
+        text: message?.content || "",
         provider,
         iterations: i + 1,
         truncated: false,
@@ -109,8 +109,10 @@ export async function runAgentLoop({
     }
   }
 
+  // Loop exhausted without a genuine (tool-free) answer. Return an honest
+  // fallback — never intermediate narration text.
   return {
-    text: lastAssistantText || "I couldn't finish researching in time.",
+    text: "I couldn't finish researching in time. Try asking again.",
     provider: "inception",
     iterations: maxIterations,
     truncated: true,
