@@ -36,6 +36,7 @@ function makeEnv(overrides = {}) {
       ...overrides,
     },
     kv,
+    convo,
   };
 }
 
@@ -67,6 +68,65 @@ describe("processMessage agent path", () => {
       assert.equal(out.reply, "plain answer");
       assert.equal(out.provider, "inception");
       assert.equal(discordPosts.length, 1); // non-interaction posts to channel
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("processMessage author attribution", () => {
+  it("records the author in history entries", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv();
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", username: "Alice", content: "hi" },
+        env
+      );
+      const resp = await convo.fetch(new Request("https://example.com/get"));
+      const state = await resp.json();
+      const userEntry = state.history.find((h) => h.role === "user");
+      assert.equal(userEntry.author.name, "Alice");
+      assert.equal(userEntry.author.id, "U1");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("prefixes the author name in the LLM prompt", async () => {
+    const realFetch = globalThis.fetch;
+    let llmMessages = null;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        llmMessages = JSON.parse(init.body).messages;
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env } = makeEnv();
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", username: "Alice", content: "how many subs?" },
+        env
+      );
+      const lastUser = llmMessages.filter((m) => m.role === "user").pop();
+      assert.ok(lastUser.content.startsWith("[Alice]"), `got: ${lastUser.content}`);
     } finally {
       globalThis.fetch = realFetch;
     }

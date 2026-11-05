@@ -54,6 +54,9 @@ export async function processMessage(context, env) {
     content: context.content,
     timestamp: Date.now()
   };
+  if (context.username || context.user_id) {
+    userEntry.author = { id: context.user_id, name: context.username };
+  }
   await stub.fetch("https://example.com/append", {
     method: "POST",
     body: JSON.stringify(userEntry)
@@ -79,11 +82,14 @@ export async function processMessage(context, env) {
   const updatedState = await updatedResp.json();
 
   const messages = [];
+  const authorLabel = (a) => (a && (a.name || a.id)) ? `[${a.name || a.id}] ` : "";
   if (updatedState.summary) {
     messages.push({ role: "system", content: `Summary of previous conversation: ${updatedState.summary}` });
   }
-  updatedState.history.forEach((h) => messages.push({ role: h.role, content: h.content }));
-  messages.push({ role: "user", content: context.content });
+  updatedState.history.forEach((h) =>
+    messages.push({ role: h.role, content: `${authorLabel(h.author)}${h.content}` })
+  );
+  messages.push({ role: "user", content: `${authorLabel({ name: context.username, id: context.user_id })}${context.content}` });
 
   // Fast path: for greetings/trivial pings, answer directly without the tool
   // loop so they stay instant and never trigger a search.
