@@ -265,6 +265,7 @@ describe("GatewayDO", () => {
     await gw.fetch(new Request("https://gateway/wake", { method: "POST" }));
     sockets[0].triggerMessage(HELLO);
     sockets[0].triggerMessage(READY);
+    await tick(); // let READY's async state settle before close
     assert.equal(timers.schedules.length, 0);
     sockets[0].triggerClose(4004);
     const status = await (await gw.fetch(new Request("https://gateway/status"))).json();

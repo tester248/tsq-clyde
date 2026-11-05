@@ -56,12 +56,14 @@ export class GatewayDO {
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/status") {
+      const recent = await this.ctx.storage.get("gw:recent").catch(() => null);
       return Response.json({
         ...this.status,
         socketOpen: !!this.socket,
         inflight: this.inflight.size,
         lastMessage: this.lastMessage,
         recent: this.events.slice(-10),
+        messageLog: Array.isArray(recent) ? recent : [],
       });
     }
     if (request.method === "POST" && url.pathname === "/wake") {
@@ -330,6 +332,13 @@ export class GatewayDO {
       `gateway MESSAGE_CREATE id=${msg.id} channel=${msg.channel_id} handle=${verdict.handle}` +
         (verdict.handle ? ` prompt="${verdict.prompt.slice(0, 60)}"` : "")
     );
+    this.#recordMessageEvent({
+      type: "message",
+      id: msg.id,
+      channel: msg.channel_id,
+      handle: verdict.handle,
+      at: Date.now(),
+    });
     if (!verdict.handle) return;
     const key = msg.channel_id;
     const prev = this.inflight.get(key) ?? Promise.resolve();
@@ -340,6 +349,20 @@ export class GatewayDO {
         if (this.inflight.get(key) === next) this.inflight.delete(key);
       })
     );
+  }
+
+  // Persist a small recent-event ring to storage so diagnostics survive a
+  // DO restart/eviction (lasMessage is in-memory and is lost).
+  async #recordMessageEvent(entry) {
+    try {
+      const raw = await this.ctx.storage.get("gw:recent");
+      const ring = raw && Array.isArray(raw) ? raw : [];
+      ring.push(entry);
+      if (ring.length > 20) ring.shift();
+      await this.ctx.storage.put("gw:recent", ring);
+    } catch (err) {
+      console.error("gateway record-message-event failed", err);
+    }
   }
 
   async #answerMention(msg, prompt) {
@@ -354,7 +377,7 @@ export class GatewayDO {
         timer = setTimeout(() => reject(new Error("mention timeout")), 45_000);
       });
       try {
-        await Promise.race([
+        const result = await Promise.race([
           processMessage(
             {
               channel_id: msg.channel_id,
@@ -366,14 +389,33 @@ export class GatewayDO {
           ),
           timeoutPromise,
         ]);
+        this.lastMessage = { ...(this.lastMessage || {}), provider: result?.provider || null };
       } finally {
         clearTimeout(timer);
       }
       console.log(`gateway answered channel=${msg.channel_id} in ${Date.now() - started}ms`);
       this.lastMessage = { ...(this.lastMessage || {}), answered: true, durationMs: Date.now() - started };
+      this.#recordMessageEvent({
+        type: "answer",
+        id: msg.id,
+        channel: msg.channel_id,
+        ok: true,
+        provider: this.lastMessage.provider,
+        durationMs: Date.now() - started,
+        at: Date.now(),
+      });
     } catch (err) {
       console.error(`gateway mention reply failed (${Date.now() - started}ms)`, err?.message || err);
       this.lastMessage = { ...(this.lastMessage || {}), failed: true, error: String(err?.message || err), durationMs: Date.now() - started };
+      this.#recordMessageEvent({
+        type: "answer",
+        id: msg.id,
+        channel: msg.channel_id,
+        ok: false,
+        error: String(err?.message || err),
+        durationMs: Date.now() - started,
+        at: Date.now(),
+      });
     }
     try {
       await this.env.LAST_MESSAGE_KV.put(`last_${msg.channel_id}`, msg.id);

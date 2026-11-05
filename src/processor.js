@@ -83,5 +83,5 @@ export async function processMessage(context, env) {
     await sendChannelMessage(context.channel_id, aiRes.text, env);
   }
 
-  return { reply: aiRes.text };
+  return { reply: aiRes.text, provider: aiRes.provider };
 }
