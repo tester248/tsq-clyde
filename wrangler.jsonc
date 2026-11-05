@@ -6,6 +6,11 @@
   // Matches the live deployment (v12, 2026-09-19). Do not bump casually:
   // newer dates change runtime behavior.
   "compatibility_date": "2025-01-01",
+  // Workers AI binding: used by the fallback provider (granite-micro) and
+  // future Workers AI features. Read in src/ai.js as env.AI.
+  "ai": {
+    "binding": "AI"
+  },
   // No cron trigger: the old 1-minute @mention poller generated ~14k
   // requests/day and is superseded by the planned gateway Durable Object
   // (live Discord events instead of polling). The scheduled() handler in
@@ -22,14 +27,17 @@
       {
         "name": "CONVERSATION_DO",
         "class_name": "ConversationDO"
+      },
+      {
+        "name": "GATEWAY_DO",
+        "class_name": "GatewayDO"
       }
-      // GATEWAY_DO binding removed for v7 (delete-class needs no binding),
-      // restored with v8.
     ]
   },
   // Mirrors the live migration state (tag v1). Secrets (DISCORD_TOKEN,
-  // DISCORD_PUBLIC_KEY, DISCORD_BOT_ID, GROQ_API_KEY) are managed outside
-  // this file via `wrangler secret put <NAME>` — never commit them.
+  // DISCORD_PUBLIC_KEY, DISCORD_BOT_ID, GROQ_API_KEY, INCEPTION_API_KEY)
+  // are managed outside this file via `wrangler secret put <NAME>` — never
+  // commit them.
   "migrations": [
     {
       "tag": "v1",
