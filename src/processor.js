@@ -1,7 +1,7 @@
 // Message processing: conversation state (per-channel Durable Object) + AI replies.
 
-import { summarizeConversation } from "./ai.js";
-import { runAgentLoop } from "./agent.js";
+import { generateReply, summarizeConversation } from "./ai.js";
+import { runAgentLoop, shouldUseAgentTools } from "./agent.js";
 import { sendChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
@@ -64,19 +64,26 @@ export async function processMessage(context, env) {
   updatedState.history.forEach((h) => messages.push({ role: h.role, content: h.content }));
   messages.push({ role: "user", content: context.content });
 
-  // Interim feedback: when a tool first fires, tell the user we're working
-  // on it. Only for non-interaction channel messages (avoid a reply to a
-  // slash-deferred command).
-  let sentFeedback = false;
-  const onTool = () => {
-    if (!sentFeedback && !context.interaction && context.channel_id) {
-      sentFeedback = true;
-      // fire-and-forget; never block the loop on a status message
-      sendChannelMessage(context.channel_id, "searching… 🔎", env).catch(() => {});
-    }
-  };
-
-  const aiRes = await runAgentLoop({ messages, env, onTool });
+  // Fast path: for greetings/trivial pings, answer directly without the tool
+  // loop so they stay instant and never trigger a search.
+  let aiRes;
+  if (!shouldUseAgentTools(context.content)) {
+    aiRes = await generateReply(messages, env);
+    aiRes = { ...aiRes, totalTokens: aiRes.tokens };
+  } else {
+    // Interim feedback: when a tool first fires, tell the user we're working
+    // on it. Only for non-interaction channel messages (avoid a reply to a
+    // slash-deferred command).
+    let sentFeedback = false;
+    const onTool = () => {
+      if (!sentFeedback && !context.interaction && context.channel_id) {
+        sentFeedback = true;
+        // fire-and-forget; never block the loop on a status message
+        sendChannelMessage(context.channel_id, "searching… 🔎", env).catch(() => {});
+      }
+    };
+    aiRes = await runAgentLoop({ messages, env, onTool });
+  }
 
   const assistantEntry = {
     role: "assistant",

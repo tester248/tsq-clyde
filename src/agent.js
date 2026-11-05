@@ -6,6 +6,29 @@
 import { callLLM } from "./ai.js";
 import { AGENT_TOOLS, executeTool as defaultExecuteTool } from "./tools.js";
 
+const AGENT_SYSTEM_HINT = {
+  role: "system",
+  content:
+    "You may use the provided tools to retrieve current information. " +
+    "Only call a tool when your knowledge may be outdated or incomplete. " +
+    "If you already know the answer, reply directly without calling any tool.",
+};
+
+// Fast-path heuristic: skip the tool loop entirely for greetings and trivial
+// pings so they answer instantly and never trigger a search.
+const GREETINGS = [
+  "hi", "hey", "hello", "yo", "sup", "whats up", "what's up", "whats up?",
+  "what's up?", "hmm", "hm", "uwu", "ok", "okay", "thanks", "thank you", "ty",
+];
+
+export function shouldUseAgentTools(prompt) {
+  const s = (prompt || "").trim().toLowerCase();
+  if (!s) return false;
+  if (GREETINGS.includes(s)) return false;
+  if (s.startsWith("whats up") || s.startsWith("what's up")) return false;
+  return true;
+}
+
 export async function runAgentLoop({
   messages,
   env,
@@ -18,6 +41,9 @@ export async function runAgentLoop({
 }) {
   const started = Date.now();
   let current = [...messages];
+  // Inject the "only search when needed" nudge as the first system message.
+  const hasSystem = current.some((m) => m.role === "system");
+  if (!hasSystem) current.unshift(AGENT_SYSTEM_HINT);
   let totalTokens = 0;
   let lastAssistantText = "";
 

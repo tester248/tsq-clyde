@@ -374,7 +374,7 @@ export class GatewayDO {
       // serialization chain (which would silently kill all later mentions).
       let timer;
       const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("mention timeout")), 45_000);
+        timer = setTimeout(() => reject(new Error("mention timeout")), 90_000);
       });
       try {
         const result = await Promise.race([
