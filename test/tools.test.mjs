@@ -24,7 +24,7 @@ const json = (obj, status = 200) =>
 
 const makeEnv = (overrides = {}) => ({
   TAVILY_API_KEY: "tavily-key",
-  SEARCH_PROVIDER: "tavily",
+  SEARCH_PROVIDER: "tavily,exa",
   ...overrides,
 });
 
@@ -107,8 +107,78 @@ describe("agent tools", () => {
     }
   });
 
-  it("executeTool returns { error } for an unknown tool", async () => {
-    const out = await executeTool("does_not_exist", {}, makeEnv());
-    assert.ok(out.error);
+  it("search falls back to Exa when Tavily fails", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.tavily.com/search", () => new Response("rate limited", { status: 429 })],
+      [
+        "api.exa.ai/search",
+        () =>
+          json({
+            results: [
+              { title: "E", url: "https://e", highlights: ["exa snippet"] },
+              { title: "E2", url: "https://e2", highlights: ["exa snippet2"] },
+            ],
+          }),
+      ],
+    ]);
+    try {
+      const out = await executeTool("search", { query: "mc", num_results: 2 }, makeEnv({ EXA_API_KEY: "exa-key" }));
+      assert.ok(Array.isArray(out.results));
+      assert.equal(out.results.length, 2);
+      assert.equal(out.results[0].snippet, "exa snippet");
+      const exaReq = calls.find((c) => c.url.includes("api.exa.ai/search"));
+      assert.ok(exaReq, "expected an Exa search call");
+      assert.equal(exaReq.init.headers.Authorization, "Bearer exa-key");
+      const body = JSON.parse(exaReq.init.body);
+      assert.equal(body.query, "mc");
+      assert.equal(body.numResults, 2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("search uses Ena first when SEARCH_PROVIDER order is exa,tavily", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.exa.ai/search", () => json({ results: [{ title: "E", url: "https://e", highlights: ["x"] }] })],
+    ]);
+    try {
+      const env = makeEnv({ EXA_API_KEY: "exa-key", SEARCH_PROVIDER: "exa,tavily" });
+      const out = await executeTool("search", { query: "mc" }, env);
+      assert.equal(out.results.length, 1);
+      const exaReq = calls.find((c) => c.url.includes("api.exa.ai/search"));
+      assert.ok(exaReq, "expected Exa to be tried first");
+      const tavilyReq = calls.find((c) => c.url.includes("api.tavily.com"));
+      assert.equal(tavilyReq, undefined, "Tavily should not have been called when Exa succeeded");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("search returns an error when all providers fail", async () => {
+    const { realFetch } = mockFetch([
+      ["api.tavily.com/search", () => new Response("rate limited", { status: 429 })],
+      ["api.exa.ai/search", () => new Response("boom", { status: 500 })],
+    ]);
+    try {
+      const out = await executeTool("search", { query: "mc" }, makeEnv({ EXA_API_KEY: "exa-key" }));
+      assert.ok(out.error, "expected an error when all providers fail");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("search skips Exa when EXA_API_KEY is missing", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.tavily.com/search", () => json({ results: [{ title: "T", url: "https://t", content: "s" }] })],
+    ]);
+    try {
+      const env = makeEnv(); // no EXA_API_KEY
+      const out = await executeTool("search", { query: "mc" }, env);
+      assert.equal(out.results.length, 1);
+      const exaReq = calls.find((c) => c.url.includes("api.exa.ai"));
+      assert.equal(exaReq, undefined, "Exa should be skipped without a key");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });

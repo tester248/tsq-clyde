@@ -49,7 +49,7 @@ async function tavilySearch(query, numResults, env) {
     body: JSON.stringify({ query, max_results: numResults ?? 5 }),
   });
   if (!res.ok) {
-    return { error: `search failed: ${res.status}` };
+    return { error: `tavily search failed: ${res.status}` };
   }
   const data = await res.json();
   const results = (data.results || []).map((r) => ({
@@ -58,6 +58,58 @@ async function tavilySearch(query, numResults, env) {
     snippet: r.content ?? "",
   }));
   return { results };
+}
+
+async function exaSearch(query, numResults, env) {
+  const key = env.EXA_API_KEY;
+  if (!key) return { error: "EXA_API_KEY not configured" };
+  const res = await fetch("https://api.exa.ai/search", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      query,
+      numResults: numResults ?? 5,
+      contents: { highlights: true },
+    }),
+  });
+  if (!res.ok) {
+    return { error: `exa search failed: ${res.status}` };
+  }
+  const data = await res.json();
+  const results = (data.results || []).map((r) => ({
+    title: r.title ?? "",
+    url: r.url ?? "",
+    snippet: (r.highlights && r.highlights[0]) || "",
+  }));
+  return { results };
+}
+
+const SEARCH_PROVIDERS = {
+  tavily: tavilySearch,
+  exa: exaSearch,
+};
+
+function searchOrder(env) {
+  const raw = env.SEARCH_PROVIDER || "tavily,exa";
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => SEARCH_PROVIDERS[s]);
+}
+
+async function runSearch(query, numResults, env) {
+  const order = searchOrder(env);
+  if (order.length === 0) return { error: "no search provider configured" };
+  const failures = [];
+  for (const name of order) {
+    const out = await SEARCH_PROVIDERS[name](query, numResults, env);
+    if (out.results) return out;
+    failures.push(out.error || name);
+  }
+  return { error: `search failed on all providers: ${failures.join(" | ")}` };
 }
 
 // Minimal HTML -> text: drop script/style, strip tags, decode common entities.
@@ -99,7 +151,7 @@ async function fetchUrl(url, env) {
 }
 
 const TOOL_IMPLS = {
-  search: async (args, env) => tavilySearch(args.query, args.num_results, env),
+  search: async (args, env) => runSearch(args.query, args.num_results, env),
   fetch_url: async (args, env) => fetchUrl(args.url, env),
 };
 
