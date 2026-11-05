@@ -60,21 +60,63 @@ export function splitIntoChunks(text, maxLen = 1900) {
   return chunks;
 }
 
-export async function sendChannelMessage(channel_id, content, env) {
+// Send a channel message. Content is chunked to fit Discord's limit.
+// opts.replyTo (message id) threads the reply under that message via
+// message_reference. opts.pingAuthor controls whether the replied-to author
+// is pinged (allowed_mentions.replied_user). Only the first chunk is
+// threaded — continuation chunks are plain messages. Resolves with the
+// created message object ({ id }) of the first posted chunk.
+export async function sendChannelMessage(channel_id, content, env, opts = {}) {
   const url = `${DISCORD_API_BASE}/channels/${channel_id}/messages`;
-  for (const chunk of splitIntoChunks(content)) {
+  const chunks = splitIntoChunks(content);
+  let first = null;
+  for (let i = 0; i < chunks.length; i++) {
+    const body = { content: chunks[i] };
+    if (i === 0 && opts.replyTo) {
+      body.message_reference = { message_id: opts.replyTo };
+      body.allowed_mentions = { replied_user: !!opts.pingAuthor };
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Authorization": `Bot ${env.DISCORD_TOKEN}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ content: chunk })
+      body: JSON.stringify(body)
     });
     if (!res.ok) {
       const txt = await res.text();
       console.error("discord send error", res.status, txt);
+      continue;
     }
+    if (first === null) {
+      try {
+        first = await res.json();
+      } catch {
+        first = {};
+      }
+    }
+  }
+  return first || {};
+}
+
+// Delete a channel message. Best-effort: errors are logged and swallowed so
+// callers (e.g. status cleanup) never fail because a delete did.
+export async function deleteChannelMessage(channel_id, message_id, env) {
+  const url = `${DISCORD_API_BASE}/channels/${channel_id}/messages/${message_id}`;
+  try {
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        "Authorization": `Bot ${env.DISCORD_TOKEN}`
+      }
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error("discord delete error", res.status, txt);
+    }
+  } catch (err) {
+    console.error("discord delete threw", err);
   }
 }
 
