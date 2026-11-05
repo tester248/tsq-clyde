@@ -37,23 +37,45 @@ export async function verifyDiscordRequest(headers, rawBody, publicKeyHex) {
   }
 }
 
+// Split long text into chunks that each fit Discord's message limit, trying
+// to break on paragraph/word boundaries rather than mid-word. The boundary
+// character is kept so chunks rejoin to the original text exactly.
+export function splitIntoChunks(text, maxLen = 1900) {
+  const input = typeof text === "string" ? text : "";
+  if (!input) return [];
+  if (input.length <= maxLen) return [input];
+  const chunks = [];
+  let rest = input;
+  while (rest.length > maxLen) {
+    // Prefer the largest soft boundary at or before maxLen; fall back to a
+    // hard cut if no good boundary exists in the first half of the window.
+    let cut = rest.lastIndexOf("\n\n", maxLen);
+    if (cut < maxLen * 0.4) cut = rest.lastIndexOf("\n", maxLen);
+    if (cut < maxLen * 0.4) cut = rest.lastIndexOf(" ", maxLen);
+    if (cut < maxLen * 0.4) cut = maxLen - 1;
+    chunks.push(rest.slice(0, cut + 1));
+    rest = rest.slice(cut + 1);
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
 export async function sendChannelMessage(channel_id, content, env) {
   const url = `${DISCORD_API_BASE}/channels/${channel_id}/messages`;
-  // Discord's message limit is 2000; hard-truncate to be safe.
-  const safeContent = content.length > 1900 ? `${content.slice(0, 1900)}...` : content;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bot ${env.DISCORD_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ content: safeContent })
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    console.error("discord send error", res.status, txt);
+  for (const chunk of splitIntoChunks(content)) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bot ${env.DISCORD_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ content: chunk })
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error("discord send error", res.status, txt);
+    }
   }
-  return res;
 }
 
 export async function sendInteractionFollowup(applicationId, interactionToken, content) {
