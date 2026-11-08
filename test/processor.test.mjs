@@ -24,6 +24,7 @@ function makeEnv(overrides = {}) {
     env: {
       INCEPTION_API_KEY: "test-inception-key",
       GROQ_API_KEY: "test-groq-key",
+      WUS_API_KEY: "test-wus-key",
       TAVILY_API_KEY: "test-tavily-key",
       CONVERSATION_DO: {
         idFromName: (n) => n,
@@ -127,6 +128,93 @@ describe("processMessage author attribution", () => {
       );
       const lastUser = llmMessages.filter((m) => m.role === "user").pop();
       assert.ok(lastUser.content.startsWith("[Alice]"), `got: ${lastUser.content}`);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("processMessage WUS escalation output", () => {
+  function mockRefusalThenWus(discordBodies) {
+    const refusal = () => Response.json({
+      choices: [{ message: { role: "assistant", content: "I can't help with that." } }],
+      usage: { total_tokens: 2 },
+    });
+    return async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) return refusal();
+      if (u.includes("api.groq.com")) return refusal();
+      if (u.includes("wusrouter.com")) {
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "the uncensored answer" } }],
+          usage: { total_tokens: 4 },
+        });
+      }
+      if (u.includes("discord.com/api")) {
+        discordBodies.push(JSON.parse(init.body));
+        return Response.json({ id: "mid" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+  }
+
+  it("stores a sanitized placeholder in history for a WUS answer", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = mockRefusalThenWus([]);
+    try {
+      const { env, convo } = makeEnv();
+      await processMessage({ channel_id: "C1", guild_id: "G1", user_id: "U1", content: "spicy question" }, env);
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      const assistantEntry = state.history.find((h) => h.role === "assistant");
+      assert.equal(assistantEntry.content, "[provided a direct answer]");
+      assert.ok(!JSON.stringify(state.history).includes("the uncensored answer"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("prefixes the channel reply with [uncensored answer]", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = mockRefusalThenWus(bodies);
+    try {
+      const { env } = makeEnv();
+      await processMessage({ channel_id: "C1", guild_id: "G1", user_id: "U1", content: "spicy question" }, env);
+      assert.equal(bodies.length, 1);
+      assert.ok(
+        bodies[0].content.startsWith("[uncensored answer]"),
+        `got: ${bodies[0].content}`
+      );
+      assert.ok(bodies[0].content.includes("the uncensored answer"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("leaves a normal Mercury answer untagged and verbatim in history", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "a normal answer" } }],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) {
+        bodies.push(JSON.parse(init.body));
+        return Response.json({ id: "mid" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv();
+      await processMessage({ channel_id: "C1", guild_id: "G1", user_id: "U1", content: "normal question" }, env);
+      assert.equal(bodies[0].content, "a normal answer");
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      const assistantEntry = state.history.find((h) => h.role === "assistant");
+      assert.equal(assistantEntry.content, "a normal answer");
     } finally {
       globalThis.fetch = realFetch;
     }

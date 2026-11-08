@@ -6,6 +6,12 @@ import { sendChannelMessage, deleteChannelMessage } from "./discord.js";
 
 const MAX_HISTORY_TOKENS = 2000;
 
+// Shown to users when an answer came from the uncensored WUS tier.
+const WUS_REPLY_TAG = "[uncensored answer]";
+// Persisted in shared history instead of the raw uncensored text, so the
+// main providers never ingest it.
+const WUS_SANITIZED_PLACEHOLDER = "[provided a direct answer]";
+
 // Phase -> human status message for progressive feedback (Gemini-style).
 const PHASE_MESSAGES = {
   search: "searching the web… 🔎",
@@ -129,9 +135,10 @@ export async function processMessage(context, env) {
     aiRes = await runAgentLoop({ messages, env, onPhase: sendStatus.send });
   }
 
+  const fromWus = aiRes.provider === "wus";
   const assistantEntry = {
     role: "assistant",
-    content: aiRes.text,
+    content: fromWus ? WUS_SANITIZED_PLACEHOLDER : aiRes.text,
     timestamp: Date.now()
   };
   await stub.fetch("https://example.com/append", {
@@ -149,7 +156,12 @@ export async function processMessage(context, env) {
       sendOpts.replyTo = context.message_id;
       sendOpts.pingAuthor = env.PING_AUTHOR === "true";
     }
-    await sendChannelMessage(context.channel_id, aiRes.text, env, sendOpts);
+    await sendChannelMessage(
+      context.channel_id,
+      fromWus ? `${WUS_REPLY_TAG} ${aiRes.text}` : aiRes.text,
+      env,
+      sendOpts
+    );
   }
 
   // Best-effort: remove the interim status messages now that the final
