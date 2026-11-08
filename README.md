@@ -26,8 +26,21 @@ bot that answers `@Klyde` mentions with a tool-using agent loop.
 
 1. **Mercury 3** (`mercury-3`) via `INCEPTION_API_KEY` (Inception API)
 2. **Groq** (`openai/gpt-oss-120b`) via `GROQ_API_KEY`
-3. **Workers AI** granite-micro (`@cf/ibm-granite/granite-4.0-h-micro`) via
+3. **WUS router** (`uncensored/deepseek-v4.1-flash:free`) via `WUS_API_KEY`
+4. **Workers AI** granite-micro (`@cf/ibm-granite/granite-4.0-h-micro`) via
    the `AI` binding
+
+**Refusal escalation:** a provider that *declines* to answer (a refusal, or
+empty output) is skipped like a failed one, so the question falls through to
+the next tier — in practice, a Mercury/Groq refusal reaches WUS. Detection is
+a conservative phrase heuristic (`isRefusal`). If every provider fails or
+declines, the last non-empty response is returned rather than a generic error.
+
+**Uncensored answers:** when WUS answers, the channel reply is prefixed
+`[uncensored answer]`, and the persisted history entry is a neutral placeholder
+(`[provided a direct answer]`) — raw uncensored text never enters the shared
+conversation that Mercury/Groq read. Normal replies are untagged and stored
+verbatim.
 
 **Tool loop** (`src/agent.js`): the model may call `search`/`fetch_url`.
 Tool results feed back as tool messages until the model answers. Bounded to
@@ -99,7 +112,7 @@ so this path never runs — it stays as a zero-cost manual fallback.
   - `SEARCH_PROVIDER` — `"tavily,exa"` default.
 - **Secrets** (`wrangler secret put <NAME>` — never in the repo):
   `DISCORD_TOKEN`, `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_ID`, `GROQ_API_KEY`,
-  `INCEPTION_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`.
+  `INCEPTION_API_KEY`, `WUS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`.
 
 > Note: Data Studio on the dashboard can only read SQL-API data. This
 > project persists via the KV storage API, so conversation state is **not**
