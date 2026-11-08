@@ -242,6 +242,85 @@ describe("generateReply provider router", () => {
   });
 });
 
+describe("callLLM refusal escalation", () => {
+  const refuse = () => json(completion("I can't help with that request."));
+
+  it("escalates from Mercury to Groq on a refusal", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", refuse],
+      ["api.groq.com", () => json(completion("groq answered"))],
+    ]);
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], makeEnv());
+      assert.equal(out.provider, "groq");
+      assert.equal(out.message.content, "groq answered");
+      assert.equal(calls.length, 2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("escalates to WUS when Mercury and Groq both refuse", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", refuse],
+      ["api.groq.com", refuse],
+      ["wusrouter.com", () => json(completion("wus answered"))],
+    ]);
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], makeEnv());
+      assert.equal(out.provider, "wus");
+      assert.equal(out.message.content, "wus answered");
+      assert.equal(calls.length, 3);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns the last non-empty response when every provider refuses", async () => {
+    const { realFetch } = mockFetch([
+      ["api.inceptionlabs.ai", refuse],
+      ["api.groq.com", refuse],
+      ["wusrouter.com", () => json(completion("wus refusal too"))],
+    ]);
+    const env = makeEnv({ AI: { run: async () => ({ response: "" }) } });
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], env);
+      assert.equal(out.message.content, "wus refusal too");
+      assert.equal(out.provider, "wus");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("does not escalate a normal Mercury answer", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(completion("a real answer"))],
+    ]);
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], makeEnv());
+      assert.equal(out.provider, "inception");
+      assert.equal(out.message.content, "a real answer");
+      assert.equal(calls.length, 1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("does not treat a tool-call round as a refusal", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(toolCompletion("search", { query: "x" }))],
+    ]);
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], makeEnv());
+      assert.equal(out.provider, "inception");
+      assert.ok(Array.isArray(out.message.tool_calls));
+      assert.equal(calls.length, 1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
 describe("isRefusal", () => {
   it("detects common refusal phrasings", () => {
     assert.equal(isRefusal({ role: "assistant", content: "I can't help with that." }), true);

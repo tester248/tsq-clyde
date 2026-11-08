@@ -129,14 +129,25 @@ export function isRefusal(message) {
 
 export async function callLLM(messages, env, opts = {}) {
   const failures = [];
+  let lastResponse = null; // last non-empty answer, used if everyone declines
   for (const name of PROVIDERS) {
     try {
       const out = await PROVIDER_FNS[name](messages, env, opts.tools ? { tools: opts.tools } : {});
+      // A refusal is a successful response that declines to answer. Treat it
+      // like a failure for this provider and try the next tier (escalation).
+      if (isRefusal(out.message)) {
+        if (out.message?.content) lastResponse = { message: out.message, provider: name, tokens: out.tokens };
+        failures.push(`${name}: refused`);
+        continue;
+      }
       return { message: out.message, provider: name, tokens: out.tokens };
     } catch (err) {
       failures.push(`${name}: ${err?.message || err}`);
     }
   }
+  // Everyone failed or declined. Prefer returning the last real answer (e.g.
+  // the most recent refusal) over a generic error.
+  if (lastResponse) return lastResponse;
   throw new Error(`all providers failed — ${failures.join(" | ")}`);
 }
 
