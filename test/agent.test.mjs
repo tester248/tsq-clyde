@@ -102,4 +102,19 @@ describe("runAgentLoop", () => {
     });
     assert.equal(out.truncated, true);
   });
+
+  it("instructs the model to emit the refusal sentinel when declining", async () => {
+    let seen = null;
+    const llm = async (messages) => {
+      seen = messages;
+      return { message: { role: "assistant", content: "ok" }, provider: "inception", tokens: 1 };
+    };
+    await runAgentLoop({ messages: [{ role: "user", content: "q" }], env, llm });
+    const system = seen.find((m) => m.role === "system");
+    assert.ok(system, "expected an injected system message");
+    assert.ok(
+      system.content.includes("##REFUSED##"),
+      `system prompt must mention the sentinel, got: ${system.content}`
+    );
+  });
 });

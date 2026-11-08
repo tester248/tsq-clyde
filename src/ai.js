@@ -96,34 +96,56 @@ const PROVIDER_FNS = {
   "workers-ai": workersAiReply,
 };
 
+// Sentinel the model is instructed to emit when it declines to answer. A
+// single exact token is far more reliable than guessing at English phrasing.
+export const REFUSAL_SENTINEL = "##REFUSED##";
+
 // Refusal phrases that signal a provider declined to answer. Deliberately
 // conservative to avoid false positives (a real answer being mistaken for a
-// refusal and needlessly escalated).
+// refusal and needlessly escalated). Patterns require a refusal VERB near the
+// start of the sentence (i can't/won't + verb), so a normal answer that merely
+// mentions inability in passing is not flagged.
 const REFUSAL_PATTERNS = [
-  /\bi can'?t help\b/i,
-  /\bi cannot help\b/i,
-  /\bcan'?t assist\b/i,
-  /\bcannot assist\b/i,
-  /\bi'?m unable\b/i,
-  /\bi am unable\b/i,
-  /\bnot able to (provide|help|assist)\b/i,
-  /\bcannot provide\b/i,
-  /\bi won'?t\b/i,
-  /\bwon'?t help\b/i,
-  /\bi refuse\b/i,
-  /\bcannot discuss\b/i,
-  /\bcan'?t discuss\b/i,
-  /\bas an ai (language model|assistant)\b/i,
-  /\bi'?m an ai\b/i,
+  // "I can't/cannot/won't <verb> ..." but NOT when the clause is immediately
+  // followed by ", but <answer>" — that's an answer that mentions inability in
+  // passing, not a refusal.
+  /\bi (can'?t|cannot|won'?t|will not|refuse to)\s+\w+(?![^.?!]*,\s*but\b)/i,
+  // Inability phrasings.
+  /\bi'?m (not able|unable)\b/i,
+  /\bi am (not able|unable)\b/i,
+  /\b(not able|unable) to (provide|help|assist|create|write|generate|answer)\b/i,
+  // Style/role disclaimers.
+  /\bas an ai (language model|assistant|model)\b/i,
+  /\bi'?m (just )?an ai\b/i,
+  // Declining to discuss / preferring not to.
+  /\bi'?d rather not\b/i,
+  /\b(i'?ll|i will) have to decline\b/i,
 ];
 
-// A response is a refusal when it has no usable answer: empty content, or
-// text matching a refusal phrase. A tool-call round is never a refusal.
+// Normalize unicode punctuation to ASCII so smart quotes (’ “ ”) and em/en
+// dashes match the ASCII patterns below. Also collapses a mojibake apostrophe
+// sequence (â€™) seen from some providers.
+function normalizeForMatch(text) {
+  return text
+    .replace(/\u00e2\u20ac\u2122/g, "'") // mojibake ’
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// A response is a refusal when it has no usable answer: the sentinel token,
+// empty content, or text matching a refusal phrase. A tool-call round is never
+// a refusal.
 export function isRefusal(message) {
   if (!message) return true;
   if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return false;
-  const content = typeof message.content === "string" ? message.content.trim() : "";
-  if (!content) return true;
+  const raw = typeof message.content === "string" ? message.content : "";
+  if (!raw.trim()) return true;
+  const content = normalizeForMatch(raw);
+  if (content.includes(REFUSAL_SENTINEL)) return true;
   return REFUSAL_PATTERNS.some((re) => re.test(content));
 }
 

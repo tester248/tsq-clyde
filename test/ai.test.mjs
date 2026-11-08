@@ -330,9 +330,41 @@ describe("isRefusal", () => {
     assert.equal(isRefusal({ role: "assistant", content: "I cannot discuss this topic." }), true);
   });
 
+  it("detects the sentinel token", () => {
+    assert.equal(isRefusal({ role: "assistant", content: "##REFUSED##" }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "  ##REFUSED##  " }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "##REFUSED##\n" }), true);
+  });
+
+  it("detects broader refusal verb forms seen in the wild", () => {
+    assert.equal(isRefusal({ role: "assistant", content: "I'm sorry, but I can't write that." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I'm not able to create explicit content." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I won't write that for you." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I can't generate that." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I cannot provide the home address of a private individual." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I'd rather not go into that." }), true);
+  });
+
+  it("detects refusals behind smart quotes and unicode punctuation", () => {
+    // Mojibake / smart apostrophes must normalize before matching.
+    assert.equal(isRefusal({ role: "assistant", content: "I\u2019m sorry, but I can\u2019t help with that." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I\u2019m unable to assist." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I can\u2019t write that." }), true);
+  });
+
   it("does not flag a normal answer", () => {
     assert.equal(
       isRefusal({ role: "assistant", content: "The 26.2 update adds copper golems and new biomes." }),
+      false
+    );
+  });
+
+  it("does not flag an answer that merely mentions inability in passing", () => {
+    assert.equal(
+      isRefusal({
+        role: "assistant",
+        content: "I can't read your mind, but here's how the copper golem works: it presses buttons.",
+      }),
       false
     );
   });

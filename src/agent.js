@@ -3,7 +3,7 @@
 // results back as tool messages, looping until the model answers or the
 // budget is exhausted.
 
-import { callLLM } from "./ai.js";
+import { callLLM, REFUSAL_SENTINEL } from "./ai.js";
 import { AGENT_TOOLS, executeTool as defaultExecuteTool } from "./tools.js";
 
 const AGENT_SYSTEM_HINT = {
@@ -14,7 +14,10 @@ const AGENT_SYSTEM_HINT = {
     "If you already know the answer, reply directly without calling any tool. " +
     "Replies are sent to a Discord channel with a 2000-character limit: keep " +
     "your answer concise, under ~1800 characters, and prefer tight bullet " +
-    "points or a short paragraph over exhaustive detail.",
+    "points or a short paragraph over exhaustive detail. " +
+    `IMPORTANT: if you are unable or unwilling to answer, reply with exactly ` +
+    `${REFUSAL_SENTINEL} and nothing else — no explanation, no apology. ` +
+    `Never use that token for any other reason.`,
 };
 
 // Fast-path heuristic: skip the tool loop entirely for greetings and trivial
