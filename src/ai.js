@@ -100,6 +100,10 @@ const PROVIDER_FNS = {
 // single exact token is far more reliable than guessing at English phrasing.
 export const REFUSAL_SENTINEL = "##REFUSED##";
 
+// User-facing message used when every provider declines and none offered
+// meaningful prose. The raw sentinel token must never reach a user.
+export const FRIENDLY_REFUSAL = "I'm sorry, I can't answer that.";
+
 // Refusal phrases that signal a provider declined to answer. Deliberately
 // conservative to avoid false positives (a real answer being mistaken for a
 // refusal and needlessly escalated). Patterns require a refusal VERB near the
@@ -151,14 +155,22 @@ export function isRefusal(message) {
 
 export async function callLLM(messages, env, opts = {}) {
   const failures = [];
-  let lastResponse = null; // last non-empty answer, used if everyone declines
+  let lastResponse = null; // last meaningful prose answer, used if everyone declines
+  let anyRefusal = false;
   for (const name of PROVIDERS) {
     try {
       const out = await PROVIDER_FNS[name](messages, env, opts.tools ? { tools: opts.tools } : {});
       // A refusal is a successful response that declines to answer. Treat it
       // like a failure for this provider and try the next tier (escalation).
       if (isRefusal(out.message)) {
-        if (out.message?.content) lastResponse = { message: out.message, provider: name, tokens: out.tokens };
+        anyRefusal = true;
+        // Keep only meaningful prose for the fallback; never the raw sentinel
+        // token, which is an internal protocol signal, not user-facing text.
+        const content = typeof out.message?.content === "string" ? out.message.content : "";
+        const prose = content.split(REFUSAL_SENTINEL).join("").trim();
+        if (prose) {
+          lastResponse = { message: { role: "assistant", content: prose }, provider: name, tokens: out.tokens };
+        }
         failures.push(`${name}: refused`);
         continue;
       }
@@ -167,9 +179,13 @@ export async function callLLM(messages, env, opts = {}) {
       failures.push(`${name}: ${err?.message || err}`);
     }
   }
-  // Everyone failed or declined. Prefer returning the last real answer (e.g.
-  // the most recent refusal) over a generic error.
+  // Everyone failed or declined. Prefer the last meaningful prose answer.
   if (lastResponse) return lastResponse;
+  // All providers declined without offering prose — surface a friendly,
+  // human-readable refusal instead of a raw protocol token.
+  if (anyRefusal) {
+    return { message: { role: "assistant", content: FRIENDLY_REFUSAL }, provider: "inception", tokens: 0 };
+  }
   throw new Error(`all providers failed — ${failures.join(" | ")}`);
 }
 

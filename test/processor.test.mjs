@@ -191,6 +191,44 @@ describe("processMessage WUS escalation output", () => {
     }
   });
 
+  it("never sends the raw sentinel to Discord when every provider declines", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies = [];
+    const sentinel = () => Response.json({
+      choices: [{ message: { role: "assistant", content: "##REFUSED##" } }],
+      usage: { total_tokens: 2 },
+    });
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) return sentinel();
+      if (u.includes("api.groq.com")) return sentinel();
+      if (u.includes("wusrouter.com")) return sentinel();
+      if (u.includes("discord.com/api")) {
+        bodies.push(JSON.parse(init.body));
+        return Response.json({ id: "mid" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv();
+      await processMessage({ channel_id: "C1", guild_id: "G1", user_id: "U1", content: "anything" }, env);
+      assert.equal(bodies.length, 1);
+      assert.ok(
+        !bodies[0].content.includes("##REFUSED##"),
+        `sentinel leaked to channel: ${bodies[0].content}`
+      );
+      assert.ok(bodies[0].content.length > 0, "expected a non-empty reply");
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      const assistantEntry = state.history.find((h) => h.role === "assistant");
+      assert.ok(
+        !assistantEntry.content.includes("##REFUSED##"),
+        `sentinel leaked into history: ${assistantEntry.content}`
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it("leaves a normal Mercury answer untagged and verbatim in history", async () => {
     const realFetch = globalThis.fetch;
     const bodies = [];

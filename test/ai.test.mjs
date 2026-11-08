@@ -292,6 +292,56 @@ describe("callLLM refusal escalation", () => {
     }
   });
 
+  it("never leaks the raw sentinel when every provider refuses via sentinel", async () => {
+    const { realFetch } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(completion("##REFUSED##"))],
+      ["api.groq.com", () => json(completion("##REFUSED##"))],
+      ["wusrouter.com", () => json(completion("##REFUSED##"))],
+    ]);
+    const env = makeEnv({ AI: { run: async () => ({ response: "" }) } });
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], env);
+      assert.ok(out.message.content, "expected a non-empty final message");
+      assert.ok(
+        !out.message.content.includes("##REFUSED##"),
+        `sentinel leaked to user: ${out.message.content}`
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("escalates through sentinel refusals to a real answer", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(completion("##REFUSED##"))],
+      ["api.groq.com", () => json(completion("groq answered"))],
+    ]);
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], makeEnv());
+      assert.equal(out.provider, "groq");
+      assert.equal(out.message.content, "groq answered");
+      assert.equal(calls.length, 2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("preserves the last prose refusal when later tiers decline via sentinel", async () => {
+    const { realFetch } = mockFetch([
+      ["api.inceptionlabs.ai", () => json(completion("I can't help with that."))],
+      ["api.groq.com", () => json(completion("##REFUSED##"))],
+      ["wusrouter.com", () => json(completion("##REFUSED##"))],
+    ]);
+    const env = makeEnv({ AI: { run: async () => ({ response: "" }) } });
+    try {
+      const out = await callLLM([{ role: "user", content: "q" }], env);
+      assert.equal(out.message.content, "I can't help with that.");
+      assert.equal(out.provider, "inception");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it("does not escalate a normal Mercury answer", async () => {
     const { realFetch, calls } = mockFetch([
       ["api.inceptionlabs.ai", () => json(completion("a real answer"))],

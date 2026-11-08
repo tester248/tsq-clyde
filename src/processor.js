@@ -1,6 +1,6 @@
 // Message processing: conversation state (per-channel Durable Object) + AI replies.
 
-import { generateReply, summarizeConversation } from "./ai.js";
+import { generateReply, summarizeConversation, REFUSAL_SENTINEL, FRIENDLY_REFUSAL } from "./ai.js";
 import { runAgentLoop, shouldUseAgentTools } from "./agent.js";
 import { sendChannelMessage, deleteChannelMessage } from "./discord.js";
 
@@ -164,6 +164,14 @@ export async function processMessage(context, env) {
       allow: !context.interaction && !!context.channel_id,
     });
     aiRes = await runAgentLoop({ messages, env, onPhase: sendStatus.send });
+  }
+
+  // Defense-in-depth: the sentinel is an internal protocol signal. If it ever
+  // appears in an answer (e.g. a provider ignored the system prompt and echoed
+  // it as real content), swap it for the friendly refusal so it never reaches
+  // history or the channel.
+  if (typeof aiRes.text === "string" && aiRes.text.includes(REFUSAL_SENTINEL)) {
+    aiRes = { ...aiRes, text: FRIENDLY_REFUSAL };
   }
 
   const fromWus = aiRes.provider === "wus";
