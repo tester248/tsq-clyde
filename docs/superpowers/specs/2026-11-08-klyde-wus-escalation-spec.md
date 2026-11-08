@@ -26,12 +26,14 @@ shared conversation history — so the main providers never ingest it.
 **Goals**
 - Detect when a provider's answer is a refusal.
 - On refusal, advance to the next provider (Mercury → Groq → WUS → Workers AI).
-- Persist a neutral placeholder in history when the answer came from WUS.
+- When WUS answers, show a visible `[uncensored answer]` tag in the channel
+  reply, and persist a neutral placeholder in history.
 - Keep the agent loop and tools unchanged.
 
 **Non-goals**
 - No guarantee of correctness — refusal detection is a heuristic.
 - No per-user separation; history stays shared per channel.
+- Normal (non-WUS) replies get **no** provider tag of any kind.
 - No change to `/ask` flow or the Minecraft path (future).
 
 ## 4. Architecture
@@ -81,6 +83,13 @@ In `src/processor.js`, when building `assistantEntry`:
 
 A `WUS_SANITIZED_PLACEHOLDER` constant documents the text.
 
+### 4.5 Visible tag on WUS replies (channel only)
+
+When `aiRes.provider === "wus"`, the **channel reply** is prefixed with a
+visible tag (e.g. `[uncensored answer] `). This applies to what users see in
+Discord only — the persisted history entry still uses the sanitized
+placeholder (4.4). Normal (non-WUS) replies carry **no** tag.
+
 ## 5. Where each piece lives
 
 | Change | File | Detail |
@@ -89,6 +98,7 @@ A `WUS_SANITIZED_PLACEHOLDER` constant documents the text.
 | Escalation | `src/ai.js` | `callLLM` checks `isRefusal`, advances on refusal |
 | All-refused fallback | `src/ai.js` | return last non-empty response |
 | Sanitized history | `src/processor.js` | `assistantEntry.content` = placeholder when provider is `wus` |
+| Visible tag | `src/processor.js` | channel reply prefixed `[uncensored answer] ` when provider is `wus` |
 
 ## 6. Review Focus (failure modes tests must pin)
 
@@ -100,7 +110,8 @@ A `WUS_SANITIZED_PLACEHOLDER` constant documents the text.
    throw).
 5. `processor.js`: when provider is `wus`, history entry content is the
    placeholder, not the raw text; otherwise verbatim.
-6. Normal (non-refusal) path unchanged: Mercury answers, no escalation.
+6. Non-WUS replies carry no tag; WUS channel replies carry `[uncensored answer]`.
+7. Normal (non-refusal) path unchanged: Mercury answers, no escalation.
 
 ## 7. Open items (locked)
 
