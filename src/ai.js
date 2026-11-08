@@ -1,9 +1,9 @@
 // Multi-provider AI router: Mercury 3 (Inception) primary, Groq fallback,
-// Workers AI granite-micro as a last resort. Providers are tried left-to-right
-// and advance ONLY on a real failure (HTTP error / thrown error) — never on a
-// guessed quota/token counter.
+// WUS router fallback, Workers AI granite-micro as a last resort. Providers
+// are tried left-to-right and advance ONLY on a real failure (HTTP error /
+// thrown error) — never on a guessed quota/token counter.
 
-export const PROVIDERS = ["inception", "groq", "workers-ai"];
+export const PROVIDERS = ["inception", "groq", "wus", "workers-ai"];
 
 const TIMEOUT_MS = 25_000;
 
@@ -65,6 +65,17 @@ async function groqReply(messages, env, extra = {}) {
   );
 }
 
+async function wusReply(messages, env, extra = {}) {
+  if (!env.WUS_API_KEY) throw new Error("WUS_API_KEY not configured");
+  return openAiCompletion(
+    "https://wusrouter.com/v1/chat/completions",
+    "uncensored/deepseek-v4.1-flash:free",
+    messages,
+    env.WUS_API_KEY,
+    extra
+  );
+}
+
 async function workersAiReply(messages, env) {
   if (!env.AI || typeof env.AI.run !== "function") {
     throw new Error("Workers AI binding (env.AI) not configured");
@@ -81,6 +92,7 @@ async function workersAiReply(messages, env) {
 const PROVIDER_FNS = {
   inception: inceptionReply,
   groq: groqReply,
+  wus: wusReply,
   "workers-ai": workersAiReply,
 };
 

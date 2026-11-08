@@ -52,6 +52,7 @@ function makeEnv(overrides = {}) {
   return {
     INCEPTION_API_KEY: "incep-key",
     GROQ_API_KEY: "groq-key",
+    WUS_API_KEY: "wus-key",
     AI: {
       run: async () => ({ response: "granite reply" }),
     },
@@ -96,10 +97,11 @@ describe("generateReply provider router", () => {
     }
   });
 
-  it("falls back to Workers AI when Mercury and Groq fail", async () => {
+  it("falls back to Workers AI when Mercury, Groq and WUS fail", async () => {
     const { realFetch, calls } = mockFetch([
       ["api.inceptionlabs.ai", () => new Response("boom", { status: 500 })],
       ["api.groq.com", () => new Response("boom", { status: 500 })],
+      ["wusrouter.com", () => new Response("boom", { status: 500 })],
     ]);
     let aiCalls = 0;
     const env = makeEnv({
@@ -110,7 +112,48 @@ describe("generateReply provider router", () => {
       assert.equal(out.text, "granite hello");
       assert.equal(out.provider, "workers-ai");
       assert.equal(aiCalls, 1);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 3);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("falls back to WUS router when Mercury and Groq fail", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => new Response("boom", { status: 500 })],
+      ["api.groq.com", () => new Response("boom", { status: 500 })],
+      ["wusrouter.com", () => json(completion("wus hello"))],
+    ]);
+    try {
+      const out = await generateReply([{ role: "user", content: "hi" }], makeEnv());
+      assert.equal(out.text, "wus hello");
+      assert.equal(out.provider, "wus");
+      assert.equal(calls.length, 3);
+      assert.ok(calls[2].url.includes("wusrouter.com/v1/chat/completions"));
+      const body = JSON.parse(calls[2].init.body);
+      assert.equal(body.model, "uncensored/deepseek-v4.1-flash:free");
+      assert.equal(calls[2].init.headers.Authorization, "Bearer wus-key");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("continues to Workers AI when WUS router fails too", async () => {
+    const { realFetch, calls } = mockFetch([
+      ["api.inceptionlabs.ai", () => new Response("boom", { status: 500 })],
+      ["api.groq.com", () => new Response("boom", { status: 500 })],
+      ["wusrouter.com", () => new Response("boom", { status: 500 })],
+    ]);
+    let aiCalls = 0;
+    const env = makeEnv({
+      AI: { run: async () => (aiCalls++, { response: "granite hello" }) },
+    });
+    try {
+      const out = await generateReply([{ role: "user", content: "hi" }], env);
+      assert.equal(out.text, "granite hello");
+      assert.equal(out.provider, "workers-ai");
+      assert.equal(aiCalls, 1);
+      assert.equal(calls.length, 3);
     } finally {
       globalThis.fetch = realFetch;
     }
