@@ -6,6 +6,7 @@ import { processMessage } from "./processor.js";
 import { stripMention } from "./gateway.js";
 import { generateReply } from "./ai.js";
 import { runAgentLoop } from "./agent.js";
+import { runRefusalProbe } from "./probe_refusal.js";
 
 export { ConversationDO } from "./conversation_do.js";
 export { GatewayDO } from "./gateway_do.js";
@@ -82,6 +83,18 @@ function gatewayStub(env) {
   const id = env.GATEWAY_DO.idFromName("gateway");
   return env.GATEWAY_DO.get(id);
 }
+  // Refusal probe: hits each provider directly with an unanswerable (but benign)
+// prompt and dumps the raw response shape, so we can see whether a STRUCTURED
+// refusal signal exists (message.refusal / finish_reason) instead of inferring
+// it from prose. Diagnostic only; returns no secrets.
+router.get("/ai/refusalprobe", async (request, env) => {
+  try {
+    const results = await runRefusalProbe(env);
+    return Response.json({ ok: true, results });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
 
 router.get("/gateway/status", async (request, env) => {
   const stub = gatewayStub(env);
