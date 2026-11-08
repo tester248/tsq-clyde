@@ -51,6 +51,34 @@ export function createStatusSender({ channel, allow, deleteMessage }) {
   return { send, cleanup };
 }
 
+// Parse the ADMIN_IDS secret (comma-separated Discord user IDs) into a set.
+// Missing/blank secret yields an empty set, so the gate fails closed.
+export function adminIds(env) {
+  const raw = typeof env?.ADMIN_IDS === "string" ? env.ADMIN_IDS : "";
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+}
+
+export function isAdmin(userId, env) {
+  if (!userId) return false;
+  return adminIds(env).has(String(userId).trim());
+}
+
+// A clear request is an explicit phrase, optionally surrounded by other text
+// ("hey klyde please clear context now"). Bare "forget" must be the whole
+// message so ordinary chat ("what if I forget my password") is not a clear.
+const CLEAR_PHRASES = ["clear context", "/clear_context", "reset context", "clear memory"];
+export function isClearContextRequest(lower) {
+  const s = (lower || "").trim();
+  if (!s) return false;
+  if (s === "forget") return true;
+  return CLEAR_PHRASES.some((p) => s.includes(p));
+}
+
 export async function processMessage(context, env) {
   const key = context.channel_id || context.guild_id || "global";
   const id = env.CONVERSATION_DO.idFromName(key);
@@ -68,7 +96,10 @@ export async function processMessage(context, env) {
   await stub.fetch("https://example.com/initialize");
 
   const lower = context.content.trim().toLowerCase();
-  if (lower === "/clear_context" || lower === "clear context" || lower === "forget") {
+  if (isClearContextRequest(lower)) {
+    if (!isAdmin(context.user_id, env)) {
+      return { reply: "Sorry — only admins can clear this channel's context." };
+    }
     await stub.fetch("https://example.com/clear");
     return { reply: "context cleared" };
   }

@@ -221,6 +221,235 @@ describe("processMessage WUS escalation output", () => {
   });
 });
 
+describe("processMessage clear-context admin gate", () => {
+  const ADMIN = "809430270897160202";
+  const NON_ADMIN = "111111111111111111";
+
+  function makeEnvWithAdmins(admins) {
+    return makeEnv({ ADMIN_IDS: admins });
+  }
+
+  async function historyLength(convo) {
+    const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+    return (state.history || []).length;
+  }
+
+  it("lets an admin clear the channel context", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("no network expected for clear"); };
+    try {
+      const { env, convo } = makeEnvWithAdmins(ADMIN);
+      // seed some history
+      await convo.fetch(
+        new Request("https://example.com/append", {
+          method: "POST",
+          body: JSON.stringify({ role: "user", content: "hello", timestamp: Date.now() }),
+        })
+      );
+      assert.ok((await historyLength(convo)) > 0);
+
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, content: "clear context" },
+        env
+      );
+      assert.match(out.reply, /cleared/i);
+      assert.equal(await historyLength(convo), 0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("refuses a non-admin clear and leaves history intact", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("no network expected for refused clear"); };
+    try {
+      const { env, convo } = makeEnvWithAdmins(ADMIN);
+      await convo.fetch(
+        new Request("https://example.com/append", {
+          method: "POST",
+          body: JSON.stringify({ role: "user", content: "hello", timestamp: Date.now() }),
+        })
+      );
+      const before = await historyLength(convo);
+
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: NON_ADMIN, content: "clear context" },
+        env
+      );
+      assert.match(out.reply, /only admins/i);
+      assert.equal(await historyLength(convo), before);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("fails closed when ADMIN_IDS is unset", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("no network expected"); };
+    try {
+      const { env, convo } = makeEnv();
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, content: "clear context" },
+        env
+      );
+      assert.match(out.reply, /only admins/i);
+      assert.equal(await historyLength(convo), 0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("accepts comma-separated admins with whitespace", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("no network expected"); };
+    try {
+      const { env } = makeEnvWithAdmins(`  ${NON_ADMIN} , ${ADMIN} `);
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, content: "forget" },
+        env
+      );
+      assert.match(out.reply, /cleared/i);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("triggers on a clear phrase embedded in a longer message", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("no network expected"); };
+    try {
+      const { env } = makeEnvWithAdmins(ADMIN);
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, content: "hey klyde please clear context now" },
+        env
+      );
+      assert.match(out.reply, /cleared/i);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("does not treat ordinary chat about forgetting as a clear", async () => {
+    const realFetch = globalThis.fetch;
+    let llmCalled = false;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        llmCalled = true;
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: { total_tokens: 2 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env } = makeEnvWithAdmins(ADMIN);
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, content: "what if I forget my password" },
+        env
+      );
+      assert.equal(llmCalled, true, "should have answered normally, not cleared");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("processMessage history compaction", () => {
+  it("summarizes and resets history when the token cap is exceeded", async () => {
+    const realFetch = globalThis.fetch;
+    const llmBodies = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        llmBodies.push(JSON.parse(init.body));
+        const isSummary = JSON.stringify(llmBodies.at(-1).messages).includes(
+          "concise summary of the conversation"
+        );
+        return Response.json({
+          choices: [
+            { message: { role: "assistant", content: isSummary ? "SUMMARY TEXT" : "answered" } },
+          ],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv();
+      // Seed history past the 2000-token cap (~4 chars/token).
+      for (let i = 0; i < 6; i++) {
+        await convo.fetch(
+          new Request("https://example.com/append", {
+            method: "POST",
+            body: JSON.stringify({
+              role: "user",
+              content: "x".repeat(1600),
+              timestamp: Date.now(),
+            }),
+          })
+        );
+      }
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "new question" },
+        env
+      );
+
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      // Compaction ran: a summary exists and the raw history was reset.
+      assert.equal(state.summary, "SUMMARY TEXT");
+      assert.ok(
+        state.history.length <= 2,
+        `history should be reset after compaction, got ${state.history.length}`
+      );
+      assert.ok(
+        llmBodies.some((b) => JSON.stringify(b.messages).includes("concise summary")),
+        "expected a summarize call"
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("does not clear the channel context on compaction", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv();
+      for (let i = 0; i < 6; i++) {
+        await convo.fetch(
+          new Request("https://example.com/append", {
+            method: "POST",
+            body: JSON.stringify({ role: "user", content: "x".repeat(1600), timestamp: Date.now() }),
+          })
+        );
+      }
+      await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "q" },
+        env
+      );
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      // Compaction keeps a summary — it must not wipe the DO like a clear does.
+      assert.ok(state.summary, "summary must survive compaction");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
 describe("processMessage reply threading", () => {
   function mockFetch(discordBodies) {
     return async (url, init) => {
