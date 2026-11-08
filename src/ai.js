@@ -96,6 +96,37 @@ const PROVIDER_FNS = {
   "workers-ai": workersAiReply,
 };
 
+// Refusal phrases that signal a provider declined to answer. Deliberately
+// conservative to avoid false positives (a real answer being mistaken for a
+// refusal and needlessly escalated).
+const REFUSAL_PATTERNS = [
+  /\bi can'?t help\b/i,
+  /\bi cannot help\b/i,
+  /\bcan'?t assist\b/i,
+  /\bcannot assist\b/i,
+  /\bi'?m unable\b/i,
+  /\bi am unable\b/i,
+  /\bnot able to (provide|help|assist)\b/i,
+  /\bcannot provide\b/i,
+  /\bi won'?t\b/i,
+  /\bwon'?t help\b/i,
+  /\bi refuse\b/i,
+  /\bcannot discuss\b/i,
+  /\bcan'?t discuss\b/i,
+  /\bas an ai (language model|assistant)\b/i,
+  /\bi'?m an ai\b/i,
+];
+
+// A response is a refusal when it has no usable answer: empty content, or
+// text matching a refusal phrase. A tool-call round is never a refusal.
+export function isRefusal(message) {
+  if (!message) return true;
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return false;
+  const content = typeof message.content === "string" ? message.content.trim() : "";
+  if (!content) return true;
+  return REFUSAL_PATTERNS.some((re) => re.test(content));
+}
+
 export async function callLLM(messages, env, opts = {}) {
   const failures = [];
   for (const name of PROVIDERS) {

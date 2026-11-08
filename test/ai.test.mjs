@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { generateReply, summarizeConversation, callLLM } from "../src/ai.js";
+import { generateReply, summarizeConversation, callLLM, isRefusal } from "../src/ai.js";
 
 function mockFetch(routes) {
   const realFetch = globalThis.fetch;
@@ -239,5 +239,37 @@ describe("generateReply provider router", () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+});
+
+describe("isRefusal", () => {
+  it("detects common refusal phrasings", () => {
+    assert.equal(isRefusal({ role: "assistant", content: "I can't help with that." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I'm unable to assist with this request." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "As an AI language model, I cannot provide that." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I won't help with that." }), true);
+    assert.equal(isRefusal({ role: "assistant", content: "I cannot discuss this topic." }), true);
+  });
+
+  it("does not flag a normal answer", () => {
+    assert.equal(
+      isRefusal({ role: "assistant", content: "The 26.2 update adds copper golems and new biomes." }),
+      false
+    );
+  });
+
+  it("does not flag a tool-call message", () => {
+    const msg = {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", type: "function", function: { name: "search", arguments: "{}" } }],
+    };
+    assert.equal(isRefusal(msg), false);
+  });
+
+  it("treats empty content as a refusal", () => {
+    assert.equal(isRefusal({ role: "assistant", content: "" }), true);
+    assert.equal(isRefusal({ role: "assistant", content: null }), true);
+    assert.equal(isRefusal(null), true);
   });
 });
