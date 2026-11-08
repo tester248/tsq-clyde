@@ -96,6 +96,59 @@ router.get("/ai/refusalprobe", async (request, env) => {
   }
 });
 
+// Slash-command definitions. Global commands propagate to every guild the bot
+// is in (up to ~1h cache), so registering once here covers all servers — which
+// is why commands previously appeared on only one server.
+export const COMMANDS = [
+  {
+    name: "ask",
+    description: "Ask Klyde a question",
+    options: [
+      { name: "prompt", description: "What do you want to ask?", type: 3, required: true },
+    ],
+  },
+  {
+    name: "clear_context",
+    description: "Clear this channel's conversation memory (admins only)",
+  },
+];
+
+// Register the global slash commands with Discord. Idempotent: PUT replaces
+// the full command set. Requires DISCORD_TOKEN.
+router.post("/discord/register-commands", async (request, env) => {
+  try {
+    const botId = await resolveBotId(env);
+    if (!botId) {
+      return Response.json({ ok: false, error: "could not resolve bot id" }, { status: 502 });
+    }
+    const res = await fetch(`https://discord.com/api/v10/applications/${botId}/commands`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bot ${env.DISCORD_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(COMMANDS),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.error("command registration failed", res.status, text);
+      return Response.json(
+        { ok: false, status: res.status, error: text.slice(0, 400) },
+        { status: 502 }
+      );
+    }
+    let registered = [];
+    try {
+      registered = JSON.parse(text).map((c) => c.name);
+    } catch {
+      // registration succeeded but we couldn't parse the echo
+    }
+    return Response.json({ ok: true, applicationId: botId, registered });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
+
 router.get("/gateway/status", async (request, env) => {
   const stub = gatewayStub(env);
   return await stub.fetch("https://gateway/status");
