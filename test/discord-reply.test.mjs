@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { sendChannelMessage, deleteChannelMessage } from "../src/discord.js";
+import { sendChannelMessage, deleteChannelMessage, sendInteractionFollowup } from "../src/discord.js";
 
 describe("sendChannelMessage reply threading", () => {
   it("sends message_reference + no ping by default when replyTo set", async () => {
@@ -93,8 +93,49 @@ describe("sendChannelMessage reply threading", () => {
       globalThis.fetch = realFetch;
     }
   });
-});
 
+  it("never posts the raw sentinel token to a channel", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes("discord.com/api")) {
+        bodies.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ id: "m" + bodies.length }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    try {
+      await sendChannelMessage("C1", "##REFUSED##", { DISCORD_TOKEN: "t" });
+      assert.equal(bodies.length, 1);
+      assert.ok(
+        !bodies[0].content.includes("##REFUSED##"),
+        `sentinel reached channel: ${bodies[0].content}`
+      );
+      assert.ok(bodies[0].content.length > 0, "expected a non-empty fallback");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("scrubs the sentinel from interaction followups", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response("", { status: 200 });
+    };
+    try {
+      await sendInteractionFollowup("A", "T", "##REFUSED##");
+      assert.equal(bodies.length, 1);
+      assert.ok(
+        !bodies[0].content.includes("##REFUSED##"),
+        `sentinel reached followup: ${bodies[0].content}`
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
 describe("deleteChannelMessage", () => {
   it("issues a DELETE to the message endpoint", async () => {
     const realFetch = globalThis.fetch;

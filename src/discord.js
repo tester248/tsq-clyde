@@ -1,6 +1,7 @@
 // Discord REST helpers + slash-command interaction handler.
 
 import { processMessage } from "./processor.js";
+import { REFUSAL_SENTINEL, FRIENDLY_REFUSAL } from "./ai.js";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 
@@ -66,9 +67,20 @@ export function splitIntoChunks(text, maxLen = 1900) {
 // is pinged (allowed_mentions.replied_user). Only the first chunk is
 // threaded — continuation chunks are plain messages. Resolves with the
 // created message object ({ id }) of the first posted chunk.
+// Final guard: the sentinel is an internal protocol signal and must never be
+// posted to a channel. If it appears in outgoing content (regardless of how
+// it got there), swap it for the friendly refusal.
+function guardAgainstSentinel(content) {
+  if (typeof content !== "string" || !content.includes(REFUSAL_SENTINEL)) {
+    return content;
+  }
+  return FRIENDLY_REFUSAL;
+}
+
 export async function sendChannelMessage(channel_id, content, env, opts = {}) {
   const url = `${DISCORD_API_BASE}/channels/${channel_id}/messages`;
-  const chunks = splitIntoChunks(content);
+  const safeContent = guardAgainstSentinel(content);
+  const chunks = splitIntoChunks(safeContent);
   let first = null;
   for (let i = 0; i < chunks.length; i++) {
     const body = { content: chunks[i] };
@@ -121,12 +133,13 @@ export async function deleteChannelMessage(channel_id, message_id, env) {
 }
 
 export async function sendInteractionFollowup(applicationId, interactionToken, content) {
-  const safeContent = content.length > 1900 ? `${content.slice(0, 1900)}...` : content;
+  const safeContent = guardAgainstSentinel(content);
+  const truncated = safeContent.length > 1900 ? `${safeContent.slice(0, 1900)}...` : safeContent;
   const url = `${DISCORD_API_BASE}/webhooks/${applicationId}/${interactionToken}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: safeContent })
+    body: JSON.stringify({ content: truncated })
   });
   if (!res.ok) {
     const txt = await res.text();

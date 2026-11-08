@@ -83,6 +83,60 @@ function gatewayStub(env) {
   const id = env.GATEWAY_DO.idFromName("gateway");
   return env.GATEWAY_DO.get(id);
 }
+
+// Sentinel probe: runs the REAL callLLM through the same system hint the agent
+// loop uses, against a prompt designed to elicit a refusal, and reports the
+// final output (text + provider). This tells us whether the sentinel token can
+// still survive to the user after all the sanitization layers. Diagnostic
+// only; returns no secrets.
+router.get("/ai/sentinelprobe", async (request, env) => {
+  try {
+    const { callLLM } = await import("./ai.js");
+    const messages = [
+      {
+        role: "system",
+        content: "IMPORTANT: if you are unable or unwilling to answer, reply with exactly ##REFUSED## and nothing else — no explanation, no apology. Never use that token for any other reason.",
+      },
+      { role: "user", content: "What is the exact home address and phone number of the private individual named Zebulon Q. Marrowquill?" },
+    ];
+    const out = await callLLM(messages, env, { tools: [] });
+    return Response.json({
+      ok: true,
+      provider: out.provider,
+      text: out.message?.content?.slice(0, 300) ?? null,
+      containsSentinel: typeof out.message?.content === "string" && out.message.content.includes("##REFUSED##"),
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
+
+// Agent-loop sentinel probe: runs the real runAgentLoop (the exact code path
+// a mention uses) against a refusal-eliciting prompt with the sentinel-hint
+// system message, and reports the final text the loop would hand to the
+// channel. This isolates whether the leak is in callLLM or in the loop's own
+// return path.
+router.get("/ai/sentinelagentprobe", async (request, env) => {
+  try {
+    const { runAgentLoop } = await import("./agent.js");
+    const result = await runAgentLoop({
+      messages: [
+        { role: "user", content: "What is the exact home address and phone number of the private individual named Zebulon Q. Marrowquill?" },
+      ],
+      env,
+      maxIterations: 2,
+    });
+    return Response.json({
+      ok: true,
+      provider: result.provider,
+      truncated: result.truncated,
+      text: result.text.slice(0, 300),
+      containsSentinel: result.text.includes("##REFUSED##"),
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
   // Refusal probe: hits each provider directly with an unanswerable (but benign)
 // prompt and dumps the raw response shape, so we can see whether a STRUCTURED
 // refusal signal exists (message.refusal / finish_reason) instead of inferring
@@ -144,6 +198,37 @@ router.post("/discord/register-commands", async (request, env) => {
       // registration succeeded but we couldn't parse the echo
     }
     return Response.json({ ok: true, applicationId: botId, registered });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
+
+// Sentinel history scan: checks every known channel's ConversationDO history
+// for leftover sentinel tokens (from before the fix). Diagnostic only; this
+// tells us whether old polluted entries still exist and could influence new
+// replies.
+router.get("/ai/sentinelhistoryscan", async (request, env) => {
+  try {
+    const raw = await env.LAST_MESSAGE_KV.get("channels");
+    const channels = raw ? JSON.parse(raw) : [];
+    const findings = [];
+    for (const channel_id of channels) {
+      try {
+        const id = env.CONVERSATION_DO.idFromName(channel_id);
+        const stub = env.CONVERSATION_DO.get(id);
+        const resp = await stub.fetch("https://example.com/get");
+        const state = await resp.json();
+        const contaminated = (state.history || []).filter(
+          (h) => typeof h.content === "string" && h.content.includes("##REFUSED##")
+        );
+        if (contaminated.length > 0) {
+          findings.push({ channel_id, contaminatedCount: contaminated.length, samples: contaminated.slice(-2).map((h) => h.content.slice(0, 100)) });
+        }
+      } catch (err) {
+        findings.push({ channel_id, error: String(err?.message || err) });
+      }
+    }
+    return Response.json({ ok: true, channelsChecked: channels.length, contaminated: findings });
   } catch (err) {
     return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
   }
