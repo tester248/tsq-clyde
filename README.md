@@ -18,7 +18,8 @@ bot that answers `@Klyde` mentions with a tool-using agent loop.
   agent loop, and posts the reply.
 - **`agent.js`** — `runAgentLoop`: a bounded, failure-tolerant tool loop.
 - **`tools.js`** — the agent's tools: `search` (multi-provider), `fetch_url`,
-  and `memory` (bounded memory add/patch/remove).
+  `memory` (bounded memory add/patch/remove), and the skills trio
+  (`skills_list` / `skill_view` / `skill_manage`).
 - **`ai.js`** — `callLLM`/`generateReply`: the provider fallback chain.
 
 ## Agent & AI pipeline
@@ -70,7 +71,17 @@ notes) [n/2200 chars]`, `USER PROFILE [n/1375 chars]`) — a few hundred tokens
 of durable context, always visible. `/clear_context` (admins) or saying
 "clear context" wipes history + channel memory but keeps user profiles
 (identity facts); the bot confirms with `context cleared`, threaded under the
-mention. Roadmap: skills (Phase 2) and
+mention.
+
+**Skills** (Hermes-inspired, progressive disclosure): a global library of
+agent-managed `SKILL.md` how-to documents in the `SKILLS_KV` namespace, exposed
+as three tools — `skills_list` (compact metadata: name/description/category),
+`skill_view` (one full document, loaded only when relevant), and
+`skill_manage` (create/patch/delete). Documents have frontmatter
+(`name`/`description`/`category`) plus a markdown body; slugs are lowercase
+kebab-case, per-skill content is capped at 8000 chars, and the library at 200
+skills. Nothing is injected into the prompt — discovery is cheap, full bodies
+cost tokens only when used. Read-only live probe: `/ai/skillprobe`. Roadmap: skills (Phase 2) and
 cross-session search (Phase 3) build on this store.
 
 ## Reply attribution & status cleanup
@@ -160,3 +171,6 @@ so this path never runs — it stays as a zero-cost manual fallback.
 - `v0.5.1` — clear-context feedback: `/clear_context` and "clear context"
   mentions now confirm in-channel (previously silent), and the command path
   actually clears instead of running an empty prompt.
+- `v0.6.0` — skills: progressive-disclosure `skills_list`/`skill_view`/
+  `skill_manage` tools backed by `SKILLS_KV` (SKILL.md frontmatter, 8000-char
+  cap, slug validation) + `/ai/skillprobe`.

@@ -6,6 +6,7 @@ import { processMessage } from "./processor.js";
 import { stripMention } from "./gateway.js";
 import { generateReply } from "./ai.js";
 import { runAgentLoop } from "./agent.js";
+import { executeTool } from "./tools.js";
 import { runRefusalProbe } from "./probe_refusal.js";
 
 export { ConversationDO } from "./conversation_do.js";
@@ -229,6 +230,31 @@ router.get("/ai/sentinelhistoryscan", async (request, env) => {
       }
     }
     return Response.json({ ok: true, channelsChecked: channels.length, contaminated: findings });
+  } catch (err) {
+    return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
+  }
+});
+
+// Skills probe: read-only verification that the SKILLS_KV binding is wired
+// and the skills tools work against real storage (list + view of the first
+// skill if any). Never writes — no public create/delete surface.
+router.get("/ai/skillprobe", async (request, env) => {
+  try {
+    const listResult = await executeTool("skills_list", {}, env);
+    const skills = Array.isArray(listResult.skills) ? listResult.skills : [];
+    let viewed = null;
+    if (skills.length > 0) {
+      const viewResult = await executeTool("skill_view", { name: skills[0].name }, env);
+      if (viewResult.content) {
+        viewed = { name: skills[0].name, chars: viewResult.content.length };
+      }
+    }
+    return Response.json({
+      binding: !!env.SKILLS_KV,
+      count: skills.length,
+      skills: skills.slice(0, 20),
+      viewed,
+    });
   } catch (err) {
     return Response.json({ ok: false, error: String(err?.message || err) }, { status: 502 });
   }
