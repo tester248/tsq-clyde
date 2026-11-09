@@ -157,3 +157,6 @@ so this path never runs — it stays as a zero-cost manual fallback.
 - `v0.5.0` — bounded memory: `memory` tool (add/patch/remove, 2200/1375
   char caps), per-channel notes + per-user profiles in `ConversationDO`, and
   prompt injection of both stores each turn.
+- `v0.5.1` — clear-context feedback: `/clear_context` and "clear context"
+  mentions now confirm in-channel (previously silent), and the command path
+  actually clears instead of running an empty prompt.
