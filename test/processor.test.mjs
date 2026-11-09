@@ -272,9 +272,25 @@ describe("processMessage clear-context admin gate", () => {
     return (state.history || []).length;
   }
 
-  it("lets an admin clear the channel context", async () => {
+  // A clear/refusal reply must reach the channel for mention contexts, so the
+  // clear paths legitimately POST to Discord. This mock allows that (recording
+  // bodies) and rejects any LLM call.
+  function mockDiscordOnly(bodies = []) {
     const realFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error("no network expected for clear"); };
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("discord.com/api")) {
+        bodies.push(JSON.parse(init.body));
+        return Response.json({ id: "mid" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    return () => (globalThis.fetch = realFetch);
+  }
+
+  it("lets an admin clear the channel context and posts feedback", async () => {
+    const bodies = [];
+    const restore = mockDiscordOnly(bodies);
     try {
       const { env, convo } = makeEnvWithAdmins(ADMIN);
       // seed some history
@@ -287,19 +303,24 @@ describe("processMessage clear-context admin gate", () => {
       assert.ok((await historyLength(convo)) > 0);
 
       const out = await processMessage(
-        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, content: "clear context" },
+        { channel_id: "C1", guild_id: "G1", user_id: ADMIN, message_id: "M1", content: "clear context" },
         env
       );
       assert.match(out.reply, /cleared/i);
+      assert.equal(out.delivered, true);
       assert.equal(await historyLength(convo), 0);
+      assert.ok(
+        bodies.some((b) => b.content === "context cleared"),
+        `expected a "context cleared" channel post; got ${JSON.stringify(bodies)}`
+      );
     } finally {
-      globalThis.fetch = realFetch;
+      restore();
     }
   });
 
-  it("refuses a non-admin clear and leaves history intact", async () => {
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error("no network expected for refused clear"); };
+  it("refuses a non-admin clear, leaves history intact, and still replies", async () => {
+    const bodies = [];
+    const restore = mockDiscordOnly(bodies);
     try {
       const { env, convo } = makeEnvWithAdmins(ADMIN);
       await convo.fetch(
@@ -311,19 +332,23 @@ describe("processMessage clear-context admin gate", () => {
       const before = await historyLength(convo);
 
       const out = await processMessage(
-        { channel_id: "C1", guild_id: "G1", user_id: NON_ADMIN, content: "clear context" },
+        { channel_id: "C1", guild_id: "G1", user_id: NON_ADMIN, message_id: "M2", content: "clear context" },
         env
       );
       assert.match(out.reply, /only admins/i);
+      assert.equal(out.delivered, true);
       assert.equal(await historyLength(convo), before);
+      assert.ok(
+        bodies.some((b) => b.content === out.reply),
+        "the refusal must be posted to the channel"
+      );
     } finally {
-      globalThis.fetch = realFetch;
+      restore();
     }
   });
 
   it("fails closed when ADMIN_IDS is unset", async () => {
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error("no network expected"); };
+    const restore = mockDiscordOnly();
     try {
       const { env, convo } = makeEnv();
       const out = await processMessage(
@@ -333,13 +358,12 @@ describe("processMessage clear-context admin gate", () => {
       assert.match(out.reply, /only admins/i);
       assert.equal(await historyLength(convo), 0);
     } finally {
-      globalThis.fetch = realFetch;
+      restore();
     }
   });
 
   it("accepts comma-separated admins with whitespace", async () => {
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error("no network expected"); };
+    const restore = mockDiscordOnly();
     try {
       const { env } = makeEnvWithAdmins(`  ${NON_ADMIN} , ${ADMIN} `);
       const out = await processMessage(
@@ -348,13 +372,12 @@ describe("processMessage clear-context admin gate", () => {
       );
       assert.match(out.reply, /cleared/i);
     } finally {
-      globalThis.fetch = realFetch;
+      restore();
     }
   });
 
   it("triggers on a clear phrase embedded in a longer message", async () => {
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw new Error("no network expected"); };
+    const restore = mockDiscordOnly();
     try {
       const { env } = makeEnvWithAdmins(ADMIN);
       const out = await processMessage(
@@ -363,7 +386,7 @@ describe("processMessage clear-context admin gate", () => {
       );
       assert.match(out.reply, /cleared/i);
     } finally {
-      globalThis.fetch = realFetch;
+      restore();
     }
   });
 
@@ -389,6 +412,45 @@ describe("processMessage clear-context admin gate", () => {
         env
       );
       assert.equal(llmCalled, true, "should have answered normally, not cleared");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("processMessage clear-context via slash command", () => {
+  const ADMIN = "809430270897160202";
+
+  it("clears on forceClear even when the interaction carries no text", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`no LLM call expected for a clear command: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv({ ADMIN_IDS: ADMIN });
+      await convo.fetch(
+        new Request("https://example.com/append", {
+          method: "POST",
+          body: JSON.stringify({ role: "user", content: "hello", timestamp: Date.now() }),
+        })
+      );
+      const out = await processMessage(
+        {
+          channel_id: "C1",
+          guild_id: "G1",
+          user_id: ADMIN,
+          content: "",
+          forceClear: true,
+          interaction: { type: 2 },
+        },
+        env
+      );
+      assert.match(out.reply, /cleared/i);
+      assert.equal(out.delivered, false, "interactions deliver via the followup, not a channel post");
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      assert.equal(state.history.length, 0);
     } finally {
       globalThis.fetch = realFetch;
     }

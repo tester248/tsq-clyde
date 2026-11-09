@@ -208,11 +208,15 @@ export async function handleDiscordInteraction(body, rawBody, headers, env, exec
 }
 
 async function processCommand(data, env) {
+  // Only the /clear_context command routes here. It carries no user text, so
+  // mark it forceClear — otherwise processMessage would treat the empty
+  // content as an ordinary prompt and never clear.
   const ctx = {
     channel_id: data.channel_id,
     guild_id: data.guild_id,
     user_id: data.member?.user?.id || data.user?.id,
-    content: data.data?.options && data.data.options[0] ? data.data.options[0].value : "",
+    content: "",
+    forceClear: true,
     interaction: data
   };
   const result = await processMessage(ctx, env);

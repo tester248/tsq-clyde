@@ -67,8 +67,10 @@ space in one batch; content with invisible/control characters is rejected.
 Both stores live in the per-channel `ConversationDO` and are injected into the
 prompt each turn as system blocks with capacity fractions (`MEMORY (channel
 notes) [n/2200 chars]`, `USER PROFILE [n/1375 chars]`) — a few hundred tokens
-of durable context, always visible. `/clear` wipes history + channel memory
-but keeps user profiles (identity facts). Roadmap: skills (Phase 2) and
+of durable context, always visible. `/clear_context` (admins) or saying
+"clear context" wipes history + channel memory but keeps user profiles
+(identity facts); the bot confirms with `context cleared`, threaded under the
+mention. Roadmap: skills (Phase 2) and
 cross-session search (Phase 3) build on this store.
 
 ## Reply attribution & status cleanup

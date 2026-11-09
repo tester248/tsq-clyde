@@ -18,6 +18,7 @@ import {
   shouldHandleMessage,
 } from "./gateway.js";
 import { processMessage } from "./processor.js";
+import { sendChannelMessage } from "./discord.js";
 
 const WATCHDOG_MS = 60_000;
 
@@ -392,6 +393,15 @@ export class GatewayDO {
           timeoutPromise,
         ]);
         this.lastMessage = { ...(this.lastMessage || {}), provider: result?.provider || null };
+        // Safety net: processMessage posts non-interaction replies itself, but
+        // if a path ever returns an undelivered reply (delivered === false),
+        // make sure the user still gets feedback instead of silence.
+        if (result && result.delivered === false && result.reply) {
+          await sendChannelMessage(msg.channel_id, result.reply, this.env, {
+            replyTo: msg.id,
+            pingAuthor: this.env.PING_AUTHOR === "true",
+          });
+        }
       } finally {
         clearTimeout(timer);
       }

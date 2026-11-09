@@ -80,6 +80,21 @@ export function isClearContextRequest(lower) {
   return CLEAR_PHRASES.some((p) => s.includes(p));
 }
 
+// Deliver a short reply to the channel for non-interaction contexts (mentions).
+// Returns true when posted, false when the caller must deliver it instead
+// (interaction followups) or there is no channel. Mirrors the final-answer
+// send options: threaded under the prompt, ping gated by PING_AUTHOR.
+async function deliverChannelReply(text, context, env) {
+  if (context.interaction || !context.channel_id) return false;
+  const sendOpts = {};
+  if (context.message_id) {
+    sendOpts.replyTo = context.message_id;
+    sendOpts.pingAuthor = env.PING_AUTHOR === "true";
+  }
+  await sendChannelMessage(context.channel_id, text, env, sendOpts);
+  return true;
+}
+
 export async function processMessage(context, env) {
   const key = context.channel_id || context.guild_id || "global";
   const id = env.CONVERSATION_DO.idFromName(key);
@@ -96,13 +111,20 @@ export async function processMessage(context, env) {
   const stub = env.CONVERSATION_DO.get(id);
   await stub.fetch("https://example.com/initialize");
 
-  const lower = context.content.trim().toLowerCase();
-  if (isClearContextRequest(lower)) {
+  const lower = (context.content || "").trim().toLowerCase();
+  // forceClear is set by the /clear_context slash command, which carries no
+  // user text and would otherwise look like an empty prompt.
+  const wantsClear = context.forceClear === true || isClearContextRequest(lower);
+  if (wantsClear) {
     if (!isAdmin(context.user_id, env)) {
-      return { reply: "Sorry — only admins can clear this channel's context." };
+      const reply = "Sorry — only admins can clear this channel's context.";
+      const delivered = await deliverChannelReply(reply, context, env);
+      return { reply, provider: null, delivered };
     }
     await stub.fetch("https://example.com/clear");
-    return { reply: "context cleared" };
+    const reply = "context cleared";
+    const delivered = await deliverChannelReply(reply, context, env);
+    return { reply, provider: null, delivered };
   }
 
   const userEntry = {
@@ -215,19 +237,8 @@ export async function processMessage(context, env) {
     body: JSON.stringify({ model: aiRes.provider, tokens: aiRes.totalTokens })
   });
 
-  if (!context.interaction && context.channel_id) {
-    const sendOpts = {};
-    if (context.message_id) {
-      sendOpts.replyTo = context.message_id;
-      sendOpts.pingAuthor = env.PING_AUTHOR === "true";
-    }
-    await sendChannelMessage(
-      context.channel_id,
-      fromWus ? `${WUS_REPLY_TAG} ${aiRes.text}` : aiRes.text,
-      env,
-      sendOpts
-    );
-  }
+  const finalText = fromWus ? `${WUS_REPLY_TAG} ${aiRes.text}` : aiRes.text;
+  const delivered = await deliverChannelReply(finalText, context, env);
 
   // Best-effort: remove the interim status messages now that the final
   // answer is up. Errors are swallowed inside cleanup.
@@ -235,5 +246,5 @@ export async function processMessage(context, env) {
     await sendStatus.cleanup().catch(() => {});
   }
 
-  return { reply: aiRes.text, provider: aiRes.provider };
+  return { reply: aiRes.text, provider: aiRes.provider, delivered };
 }
