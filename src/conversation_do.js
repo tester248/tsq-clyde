@@ -6,7 +6,9 @@ export class ConversationDO {
     this.state = {
       history: [],
       tokenCount: 0,
-      modelUsage: {}
+      modelUsage: {},
+      memory: "",
+      userProfiles: {}
     };
   }
 
@@ -26,12 +28,41 @@ export class ConversationDO {
       case "/get":
         return new Response(JSON.stringify(this.state));
       case "/clear":
-        this.state = { history: [], tokenCount: 0, modelUsage: {} };
+        this.state = {
+          history: [],
+          tokenCount: 0,
+          modelUsage: {},
+          memory: "",
+          // User profiles are identity facts, not conversation state — they
+          // survive a clear.
+          userProfiles: this.state.userProfiles || {}
+        };
         await this.stateObj.storage.put("state", this.state);
         return new Response("cleared");
       case "/setSummary": {
         const body = await request.json();
         await this.setSummary(body.summary);
+        return new Response("ok");
+      }
+      case "/memoryGet":
+        return new Response(JSON.stringify({ memory: this.state.memory || "" }));
+      case "/setMemory": {
+        const body = await request.json();
+        this.state.memory = body.memory || "";
+        await this.stateObj.storage.put("state", this.state);
+        return new Response("ok");
+      }
+      case "/getUserProfile": {
+        const userId = url.searchParams.get("userId");
+        return new Response(
+          JSON.stringify({ profile: this.state.userProfiles?.[userId] || "" })
+        );
+      }
+      case "/setUserProfile": {
+        const body = await request.json();
+        this.state.userProfiles = this.state.userProfiles || {};
+        this.state.userProfiles[body.userId] = body.profile;
+        await this.stateObj.storage.put("state", this.state);
         return new Response("ok");
       }
       case "/recordUsage": {

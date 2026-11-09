@@ -53,18 +53,78 @@ describe("ConversationDO", () => {
     assert.equal(state.summary, "greeted");
   });
 
-  it("clear resets to empty state", async () => {
+  it("clear resets history, memory, and usage but keeps user profiles", async () => {
     const convo = makeConvo();
     await call(convo, "/append", {
       method: "POST",
       body: JSON.stringify({ role: "user", content: "x" }),
     });
+    await call(convo, "/setMemory", {
+      method: "POST",
+      body: JSON.stringify({ memory: "channel notes" }),
+    });
+    await call(convo, "/setUserProfile", {
+      method: "POST",
+      body: JSON.stringify({ userId: "U1", profile: "prefers terse" }),
+    });
     assert.equal(await (await call(convo, "/clear")).text(), "cleared");
-    assert.deepEqual(await (await call(convo, "/get")).json(), {
+    const state = await (await call(convo, "/get")).json();
+    assert.deepEqual(state, {
       history: [],
       tokenCount: 0,
       modelUsage: {},
+      memory: "",
+      userProfiles: { U1: "prefers terse" },
     });
+  });
+
+  it("stores and persists channel memory across initialize", async () => {
+    const convo = makeConvo();
+    await call(convo, "/setMemory", {
+      method: "POST",
+      body: JSON.stringify({ memory: "this server runs on ports 3000-3005" }),
+    });
+    const state = await (await call(convo, "/get")).json();
+    assert.equal(state.memory, "this server runs on ports 3000-3005");
+
+    // eviction round-trip: fresh instance, same storage
+    await call(convo, "/initialize"); // reloads from storage
+    const reloaded = await (await call(convo, "/get")).json();
+    assert.equal(reloaded.memory, "this server runs on ports 3000-3005");
+  });
+
+  it("stores and persists user profiles across initialize", async () => {
+    const convo = makeConvo();
+    await call(convo, "/setUserProfile", {
+      method: "POST",
+      body: JSON.stringify({ userId: "U1", profile: "likes short answers" }),
+    });
+    await call(convo, "/setUserProfile", {
+      method: "POST",
+      body: JSON.stringify({ userId: "U2", profile: "wants detail" }),
+    });
+    await call(convo, "/initialize");
+    const state = await (await call(convo, "/get")).json();
+    assert.equal(state.userProfiles.U1, "likes short answers");
+    assert.equal(state.userProfiles.U2, "wants detail");
+  });
+
+  it("memoryGet and getUserProfile return the stored values", async () => {
+    const convo = makeConvo();
+    await call(convo, "/setMemory", {
+      method: "POST",
+      body: JSON.stringify({ memory: "notes" }),
+    });
+    await call(convo, "/setUserProfile", {
+      method: "POST",
+      body: JSON.stringify({ userId: "U1", profile: "p" }),
+    });
+    const mem = await (await call(convo, "/memoryGet")).json();
+    assert.equal(mem.memory, "notes");
+    const prof = await (await call(convo, "/getUserProfile?userId=U1")).json();
+    assert.equal(prof.profile, "p");
+    const missing = await (await call(convo, "/getUserProfile?userId=U9")).json();
+    assert.equal(missing.profile, "");
   });
 
   it("unknown routes 404", async () => {
