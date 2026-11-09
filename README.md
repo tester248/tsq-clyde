@@ -11,15 +11,16 @@ bot that answers `@Klyde` mentions with a tool-using agent loop.
   per-channel conversation pipeline, serialized per channel.
 - **`ConversationDO`** (`src/conversation_do.js`) — one Durable Object per
   Discord channel (keyed by `channel_id || guild_id || "global"`), holding a
-  rolling conversation history plus bounded memory (channel notes + per-user
-  profiles).
+  rolling conversation history, bounded memory (channel notes + per-user
+  profiles), and an append-only FTS5 search index of every message.
 - **`processor.js`** — `processMessage` ties it together: loads history,
   formats the LLM prompt (with author attribution + memory blocks), runs the
   agent loop, and posts the reply.
 - **`agent.js`** — `runAgentLoop`: a bounded, failure-tolerant tool loop.
 - **`tools.js`** — the agent's tools: `search` (multi-provider), `fetch_url`,
-  `memory` (bounded memory add/patch/remove), and the skills trio
-  (`skills_list` / `skill_view` / `skill_manage`).
+  `memory` (bounded memory add/patch/remove), the skills trio
+  (`skills_list` / `skill_view` / `skill_manage`), and `session_search`
+  (FTS5 recall over past channel messages).
 - **`ai.js`** — `callLLM`/`generateReply`: the provider fallback chain.
 
 ## Agent & AI pipeline
@@ -81,8 +82,17 @@ as three tools — `skills_list` (compact metadata: name/description/category),
 (`name`/`description`/`category`) plus a markdown body; slugs are lowercase
 kebab-case, per-skill content is capped at 8000 chars, and the library at 200
 skills. Nothing is injected into the prompt — discovery is cheap, full bodies
-cost tokens only when used. Read-only live probe: `/ai/skillprobe`. Roadmap: skills (Phase 2) and
-cross-session search (Phase 3) build on this store.
+cost tokens only when used. Read-only live probe: `/ai/skillprobe`.
+
+**Session search** (Phase 3, Hermes-inspired): every channel message is
+indexed into an append-only FTS5 table inside the channel's `ConversationDO`
+(`messages_fts`). The `session_search` tool queries it by keyword — all terms
+must appear, FTS5 metacharacters are stripped — and returns ranked excerpts
+(`bm25` + `snippet()`). The index **survives history compaction and `/clear`**
+(archive semantics): old specifics stay findable on demand without ever
+occupying prompt space. Pre-existing history is backfilled once on first
+access. Availability probe: `/ai/searchstatus?channel=<id>` (boolean only, no
+content).
 
 ## Reply attribution & status cleanup
 
@@ -174,3 +184,6 @@ so this path never runs — it stays as a zero-cost manual fallback.
 - `v0.6.0` — skills: progressive-disclosure `skills_list`/`skill_view`/
   `skill_manage` tools backed by `SKILLS_KV` (SKILL.md frontmatter, 8000-char
   cap, slug validation) + `/ai/skillprobe`.
+- `v0.7.0` — session search: append-only FTS5 index in `ConversationDO`
+  (backfill, archive semantics across compaction/clear) + `session_search`
+  tool + `/ai/searchstatus`.

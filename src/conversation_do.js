@@ -88,6 +88,8 @@ export class ConversationDO {
       }
       case "/searchMessages":
         return this.searchMessages(url);
+      case "/searchEnabled":
+        return new Response(JSON.stringify({ enabled: this.searchEnabled }));
       default:
         return new Response("not found", { status: 404 });
     }

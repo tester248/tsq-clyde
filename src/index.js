@@ -235,6 +235,18 @@ router.get("/ai/sentinelhistoryscan", async (request, env) => {
   }
 });
 
+// Session-search availability probe: reports whether the per-channel DO's
+// FTS5 index is available (storage.sql present). Returns only a boolean —
+// never any conversation content. ?channel= selects the channel; default
+// uses the configured test key.
+router.get("/ai/searchstatus", async (request, env) => {
+  const url = new URL(request.url);
+  const channel = url.searchParams.get("channel") || "probe";
+  const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName(channel));
+  const res = await stub.fetch("https://example.com/searchEnabled");
+  return res;
+});
+
 // Skills probe: read-only verification that the SKILLS_KV binding is wired
 // and the skills tools work against real storage (list + view of the first
 // skill if any). Never writes — no public create/delete surface.
