@@ -555,3 +555,176 @@ describe("processMessage reply threading", () => {
     }
   });
 });
+
+describe("processMessage bounded memory prompt injection", () => {
+  const llmMessages = (capture) => {
+    const realFetch = globalThis.fetch;
+    let captured = null;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        captured = JSON.parse(init.body).messages;
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: { total_tokens: 3 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    return async () => {
+      try {
+        await capture();
+        return captured;
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    };
+  };
+
+  const seedMemory = (convo, memory) =>
+    convo.fetch(
+      new Request("https://example.com/setMemory", {
+        method: "POST",
+        body: JSON.stringify({ memory }),
+      })
+    );
+  const seedProfile = (convo, userId, profile) =>
+    convo.fetch(
+      new Request("https://example.com/setUserProfile", {
+        method: "POST",
+        body: JSON.stringify({ userId, profile }),
+      })
+    );
+
+  it("injects channel memory and the current asker's profile as labeled system blocks", async () => {
+    const { env, convo } = makeEnv();
+    await seedMemory(convo, "server runs ports 3000-3005");
+    await seedProfile(convo, "U1", "prefers terse dot-points");
+    const getMessages = llmMessages(() =>
+      processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "hello" },
+        env
+      )
+    );
+    const messages = await getMessages();
+
+    const memBlock = messages.find(
+      (m) => m.role === "system" && m.content.startsWith("MEMORY (channel notes)")
+    );
+    assert.ok(memBlock, "expected a channel memory system block");
+    assert.match(memBlock.content, /\[27\/2200 chars\]/);
+    assert.ok(memBlock.content.includes("server runs ports 3000-3005"));
+
+    const profileBlock = messages.find(
+      (m) => m.role === "system" && m.content.startsWith("USER PROFILE")
+    );
+    assert.ok(profileBlock, "expected a user profile system block");
+    assert.match(profileBlock.content, /\[24\/1375 chars\]/);
+    assert.ok(profileBlock.content.includes("prefers terse dot-points"));
+  });
+
+  it("omits both blocks when memory and profile are empty", async () => {
+    const { env } = makeEnv();
+    const getMessages = llmMessages(() =>
+      processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "hello" },
+        env
+      )
+    );
+    const messages = await getMessages();
+    assert.ok(
+      !messages.some(
+        (m) =>
+          m.role === "system" &&
+          (m.content.startsWith("MEMORY (channel notes)") || m.content.startsWith("USER PROFILE"))
+      ),
+      "no memory/profile blocks expected for empty stores"
+    );
+  });
+
+  it("only injects the profile of the current asker", async () => {
+    const { env, convo } = makeEnv();
+    await seedProfile(convo, "U1", "likes short answers");
+
+    const getMessages = (userId) =>
+      llmMessages(() =>
+        processMessage(
+          { channel_id: "C1", guild_id: "G1", user_id: userId, content: "hello" },
+          env
+        )
+      );
+    const others = await getMessages("U2")();
+    assert.ok(
+      !others.some((m) => m.role === "system" && m.content.startsWith("USER PROFILE")),
+      "U2 must not see U1's profile"
+    );
+    const self = await getMessages("U1")();
+    assert.ok(
+      self.some((m) => m.role === "system" && m.content.startsWith("USER PROFILE")),
+      "U1 should see their own profile"
+    );
+  });
+});
+
+describe("processMessage bounded memory tool plumbing", () => {
+  it("routes the agent's memory tool call to the real ConversationDO", async () => {
+    const realFetch = globalThis.fetch;
+    let llmCalls = 0;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("api.inceptionlabs.ai")) {
+        llmCalls++;
+        if (llmCalls === 1) {
+          // Model decides to remember a fact via the memory tool.
+          return Response.json({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: {
+                        name: "memory",
+                        arguments: JSON.stringify({
+                          target: "memory",
+                          operations: [{ action: "add", content: "klyde ships every friday" }],
+                        }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: { total_tokens: 4 },
+          });
+        }
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "noted! 🌱" } }],
+          usage: { total_tokens: 2 },
+        });
+      }
+      if (u.includes("discord.com/api")) return Response.json({ id: "mid" });
+      throw new Error(`unexpected fetch: ${u}`);
+    };
+    try {
+      const { env, convo } = makeEnv();
+      const out = await processMessage(
+        { channel_id: "C1", guild_id: "G1", user_id: "U1", content: "keep this fact in mind" },
+        env
+      );
+      assert.equal(out.reply, "noted! 🌱");
+      const state = await (await convo.fetch(new Request("https://example.com/get"))).json();
+      assert.ok(
+        state.memory.includes("klyde ships every friday"),
+        `memory tool result did not reach the DO: ${JSON.stringify(state.memory)}`
+      );
+      assert.ok(llmCalls >= 2, "expected at least two LLM calls (tool + final)");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

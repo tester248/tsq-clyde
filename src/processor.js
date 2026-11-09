@@ -3,6 +3,7 @@
 import { generateReply, summarizeConversation, REFUSAL_SENTINEL, FRIENDLY_REFUSAL } from "./ai.js";
 import { runAgentLoop, shouldUseAgentTools } from "./agent.js";
 import { sendChannelMessage, deleteChannelMessage } from "./discord.js";
+import { MEMORY_CHANNEL_LIMIT, MEMORY_USER_LIMIT } from "./tools.js";
 
 const MAX_HISTORY_TOKENS = 2000;
 
@@ -141,6 +142,23 @@ export async function processMessage(context, env) {
   if (updatedState.summary) {
     messages.push({ role: "system", content: `Summary of previous conversation: ${updatedState.summary}` });
   }
+  // Bounded memory (Hermes-inspired): inject the channel notes and the current
+  // asker's profile when present, labeled with their capacity fractions so the
+  // model knows the headroom. Both are §-delimited, caps enforced by the
+  // memory tool and ConversationDO.
+  if (updatedState.memory) {
+    messages.push({
+      role: "system",
+      content: `MEMORY (channel notes) [${updatedState.memory.length}/${MEMORY_CHANNEL_LIMIT} chars]\n${updatedState.memory}`,
+    });
+  }
+  const currentProfile = updatedState.userProfiles?.[context.user_id];
+  if (currentProfile) {
+    messages.push({
+      role: "system",
+      content: `USER PROFILE [${currentProfile.length}/${MEMORY_USER_LIMIT} chars]\n${currentProfile}`,
+    });
+  }
   updatedState.history.forEach((h) =>
     messages.push({ role: h.role, content: `${authorLabel(h.author)}${h.content}` })
   );
@@ -163,7 +181,15 @@ export async function processMessage(context, env) {
       deleteMessage: (id) => deleteChannelMessage(context.channel_id, id, env),
       allow: !context.interaction && !!context.channel_id,
     });
-    aiRes = await runAgentLoop({ messages, env, onPhase: sendStatus.send });
+    // The memory tool needs the DO stub + key and the current asker. These are
+    // attached to a shallow env clone so the provider chain still sees every
+    // binding, and tools see the memory plumbing.
+    const toolEnv = Object.assign(Object.create(env), {
+      CONVERSATION_STUB: stub,
+      CONVERSATION_KEY: key,
+      CURRENT_USER_ID: context.user_id,
+    });
+    aiRes = await runAgentLoop({ messages, env: toolEnv, onPhase: sendStatus.send });
   }
 
   // Defense-in-depth: the sentinel is an internal protocol signal. If it ever
