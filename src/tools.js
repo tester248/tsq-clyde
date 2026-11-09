@@ -4,6 +4,16 @@
 const FETCH_MAX_BYTES = 64 * 1024;
 const TOOL_TIMEOUT_MS = 15_000;
 
+// Bounded memory (Hermes-inspired): channel notes + per-user profiles, with
+// hard character caps and §-delimited entries. The agent manages these via the
+// `memory` tool.
+export const MEMORY_CHANNEL_LIMIT = 2200;
+export const MEMORY_USER_LIMIT = 1375;
+const MEMORY_DELIMITER = "§";
+// Reject content with invisible unicode or control characters (injection
+// hygiene) — these are injected into the system prompt.
+const UNSAFE_MEMORY_PATTERN = /[\u0000-\u001f\u200b-\u200f\u202a-\u202e\ufeff]/;
+
 async function fetchWithToolTimeout(url, init) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
@@ -46,7 +56,40 @@ const fetchUrlTool = {
   },
 };
 
-export const AGENT_TOOLS = [searchTool, fetchUrlTool];
+const memoryTool = {
+  type: "function",
+  function: {
+    name: "memory",
+    description:
+      "Read/write bounded memory. target 'memory' is this channel's shared notes; " +
+      "target 'user' is the current user's profile. Operations: add (append an " +
+      "entry), patch (replace a unique substring in one entry via old_text + content), " +
+      "remove (delete the entry containing a unique substring via old_text). Memory " +
+      "has hard character caps: if a write would overflow, the tool returns an error " +
+      "listing current entries and the chars needed — consolidate (patch/remove) then " +
+      "retry in one batch.",
+    parameters: {
+      type: "object",
+      properties: {
+        target: { type: "string", enum: ["memory", "user"] },
+        operations: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["add", "patch", "remove"] },
+              content: { type: "string" },
+              old_text: { type: "string" },
+            },
+          },
+        },
+      },
+      required: ["target", "operations"],
+    },
+  },
+};
+
+export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool];
 
 async function tavilySearch(query, numResults, env) {
   const key = env.TAVILY_API_KEY;
@@ -164,7 +207,128 @@ async function fetchUrl(url, env) {
 const TOOL_IMPLS = {
   search: async (args, env) => runSearch(args.query, args.num_results, env),
   fetch_url: async (args, env) => fetchUrl(args.url, env),
+  memory: async (args, env) => memoryImpl(args, env),
 };
+
+// ---- memory tool implementation ----
+
+// The memory tool reads and writes through the per-channel ConversationDO
+// stub, which processMessage attaches to env as CONVERSATION_STUB. The `user`
+// target resolves to the current asker via env.CURRENT_USER_ID.
+
+async function memoryRead(env, target) {
+  const stub = env.CONVERSATION_STUB;
+  if (!stub) return { error: "memory store unavailable" };
+  if (target === "memory") {
+    const res = await stub.fetch("https://example.com/memoryGet");
+    const data = await res.json();
+    return { value: data.memory || "" };
+  }
+  const res = await stub.fetch(
+    `https://example.com/getUserProfile?userId=${encodeURIComponent(env.CURRENT_USER_ID || "")}`
+  );
+  const data = await res.json();
+  return { value: data.profile || "" };
+}
+
+async function memoryWrite(env, target, value) {
+  const stub = env.CONVERSATION_STUB;
+  if (target === "memory") {
+    await stub.fetch("https://example.com/setMemory", {
+      method: "POST",
+      body: JSON.stringify({ memory: value }),
+    });
+    return;
+  }
+  await stub.fetch("https://example.com/setUserProfile", {
+    method: "POST",
+    body: JSON.stringify({ userId: env.CURRENT_USER_ID, profile: value }),
+  });
+}
+
+function parseEntries(text) {
+  return text
+    .split(MEMORY_DELIMITER)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isUnsafeMemoryContent(content) {
+  return UNSAFE_MEMORY_PATTERN.test(content);
+}
+
+async function memoryImpl(args, env) {
+  const target = args.target;
+  if (target !== "memory" && target !== "user") {
+    return { success: false, error: `unknown memory target: ${target}` };
+  }
+  const ops = Array.isArray(args.operations) ? args.operations : [];
+  if (ops.length === 0) {
+    return { success: false, error: "no operations provided" };
+  }
+
+  const read = await memoryRead(env, target);
+  if (read.error) return { success: false, error: read.error };
+  const limit = target === "memory" ? MEMORY_CHANNEL_LIMIT : MEMORY_USER_LIMIT;
+
+  let entries = parseEntries(read.value);
+
+  for (const op of ops) {
+    if (!op || typeof op.action !== "string") {
+      return { success: false, error: "operation missing action" };
+    }
+    if (op.action === "add") {
+      const content = typeof op.content === "string" ? op.content.trim() : "";
+      if (!content) return { success: false, error: "add requires content" };
+      if (isUnsafeMemoryContent(content)) {
+        return { success: false, error: "content rejected: contains invisible or control characters" };
+      }
+      if (entries.includes(content)) {
+        return { success: true, note: "no duplicate added" };
+      }
+      entries.push(content);
+    } else if (op.action === "patch" || op.action === "remove") {
+      const oldText = typeof op.old_text === "string" ? op.old_text.trim() : "";
+      if (!oldText) {
+        return { success: false, error: `${op.action} requires old_text` };
+      }
+      const matches = entries.filter((e) => e.includes(oldText));
+      if (matches.length !== 1) {
+        return {
+          success: false,
+          error: `${op.action} old_text matched ${matches.length} entries (need exactly 1)`,
+          current_entries: entries,
+          closest_entries: matches,
+        };
+      }
+      if (op.action === "remove") {
+        entries = entries.filter((e) => e !== matches[0]);
+      } else {
+        const content = typeof op.content === "string" ? op.content : "";
+        if (isUnsafeMemoryContent(content)) {
+          return { success: false, error: "content rejected: contains invisible or control characters" };
+        }
+        entries = entries.map((e) => (e === matches[0] ? e.replace(oldText, content) : e));
+      }
+    } else {
+      return { success: false, error: `unknown action: ${op.action}` };
+    }
+  }
+
+  const joined = entries.join(` ${MEMORY_DELIMITER} `);
+  const size = joined.length;
+  if (size > limit) {
+    return {
+      success: false,
+      error: `memory at ${size}/${limit} chars — exceeds the ${limit}-char limit; free at least ${size - limit} chars (patch/remove) then retry`,
+      current_entries: entries,
+      current_size: size,
+    };
+  }
+
+  await memoryWrite(env, target, joined);
+  return { success: true, entries, size };
+}
 
 export async function executeTool(name, args, env) {
   const impl = TOOL_IMPLS[name];
