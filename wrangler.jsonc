@@ -25,6 +25,12 @@
     {
       "binding": "LAST_MESSAGE_KV",
       "id": "bad1f65bfcfc4390b93f71faa8805047"
+    },
+    {
+      // Skills library (Phase 2): global, agent-managed SKILL.md documents,
+      // read/written by the skills_list / skill_view / skill_manage tools.
+      "binding": "SKILLS_KV",
+      "id": "517b7b54995a4b5091d8266fa15aa8a4"
     }
   ],
   "durable_objects": {
