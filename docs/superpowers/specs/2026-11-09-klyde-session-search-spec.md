@@ -152,3 +152,21 @@ LIMIT ?
 - Live: after a conversation, `session_search` (via the bot) finds an older
   detail even after the context has been cleared/compacted.
 - README updated; conventional commits; tagged at slice end (`v0.7.0`).
+
+## 8. Verification status (post-ship)
+
+Shipped as `v0.7.0`. Verified at deploy time:
+
+- **Index availability:** `/ai/searchstatus` on a live production `ConversationDO`
+  returns `{"enabled": true}` — `storage.sql` / FTS5 is present on the real
+  instances (the one thing unit tests could not prove).
+- **Logic:** routing, sanitization, limit clamping, backfill, and archive
+  semantics are pinned by unit tests against a fake SQL layer.
+
+**Known gap (honest caveat):** the real FTS5 query path — actual SQLite
+`MATCH`, `bm25`, and `snippet()` — has **not yet been exercised against the
+live SQLite engine**. The deployed worker only confirms the table exists and is
+enabled; the first genuine query workout happens when a user runs
+`session_search` in Discord. If the real query syntax errors, the DO's
+console logs will show it and the `searchMessages` route returns a clean
+`search failed: ...` error (it never crashes the reply loop).
