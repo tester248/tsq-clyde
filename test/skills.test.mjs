@@ -40,12 +40,13 @@ category: engineering
 `;
 
 describe("skills tools", () => {
-  it("AGENT_TOOLS declares search, fetch_url, memory, and the three skills tools", () => {
+  it("AGENT_TOOLS declares search, fetch_url, memory, and the three skills tools plus session_search", () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
     assert.deepEqual(names.sort(), [
       "fetch_url",
       "memory",
       "search",
+      "session_search",
       "skill_manage",
       "skill_view",
       "skills_list",

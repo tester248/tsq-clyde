@@ -150,7 +150,27 @@ const skillManageTool = {
   },
 };
 
-export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool, skillsListTool, skillViewTool, skillManageTool];
+const sessionSearchTool = {
+  type: "function",
+  function: {
+    name: "session_search",
+    description:
+      "Search this channel's past conversations by keyword. Returns matching " +
+      "messages with author, time, and an excerpt. Use when the current context " +
+      "lacks detail you discussed before (e.g. decisions, numbers, or prior " +
+      "answers that have been compacted out of view).",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords to search for (all must appear)" },
+        limit: { type: "number", description: "Optional max results (1-10, default 5)" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool, skillsListTool, skillViewTool, skillManageTool, sessionSearchTool];
 
 async function tavilySearch(query, numResults, env) {
   const key = env.TAVILY_API_KEY;
@@ -272,7 +292,43 @@ const TOOL_IMPLS = {
   skills_list: async (args, env) => skillsListImpl(env),
   skill_view: async (args, env) => skillViewImpl(args, env),
   skill_manage: async (args, env) => skillManageImpl(args, env),
+  session_search: async (args, env) => sessionSearchImpl(args, env),
 };
+
+// ---- session_search tool implementation (Phase 3) ----
+
+// Queries the per-channel ConversationDO's FTS5 index via the same stub the
+// memory tool uses (CONVERSATION_STUB, attached by processMessage).
+
+async function sessionSearchImpl(args, env) {
+  const stub = env.CONVERSATION_STUB;
+  if (!stub) return { success: false, error: "conversation store unavailable" };
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) return { success: false, error: "query is required" };
+
+  let limit = parseInt(args.limit ?? "", 10);
+  if (!Number.isFinite(limit) || limit <= 0) limit = null;
+
+  let url = `https://example.com/searchMessages?q=${encodeURIComponent(query)}`;
+  if (limit !== null) url += `&limit=${limit}`;
+
+  try {
+    const res = await stub.fetch(url);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { success: false, error: data.error || `search failed: ${res.status}` };
+    }
+    const data = await res.json();
+    const matches = (data.results || []).map((r) => ({
+      author: r.author || "",
+      ts: r.ts ?? null,
+      snippet: r.snippet || "",
+    }));
+    return { success: true, matches };
+  } catch (err) {
+    return { success: false, error: `search error: ${err?.message || err}` };
+  }
+}
 
 // ---- skills tool implementation (Phase 2, Hermes-inspired) ----
 

@@ -29,12 +29,13 @@ const makeEnv = (overrides = {}) => ({
 });
 
 describe("agent tools", () => {
-  it("AGENT_TOOLS declares search, fetch_url, memory, and the skills tools", () => {
+  it("AGENT_TOOLS declares search, fetch_url, memory, the skills tools, and session_search", () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
     assert.deepEqual(names.sort(), [
       "fetch_url",
       "memory",
       "search",
+      "session_search",
       "skill_manage",
       "skill_view",
       "skills_list",
@@ -316,5 +317,58 @@ describe("memory tool", () => {
     }, env);
     assert.equal(out.success, false);
     assert.ok(out.error.includes("limit"));
+  });
+});
+
+describe("session_search tool", () => {
+  function makeSearchEnv({ limit } = {}) {
+    const calls = [];
+    const stub = {
+      fetch: async (url) => {
+        const u = new URL(url);
+        calls.push({ path: u.pathname, query: u.searchParams.get("q"), limit: u.searchParams.get("limit") });
+        const results = [
+          { rowid: 1, role: "user", author: "Alice", ts: 1000, snippet: "we discussed [deploy] windows" },
+          { rowid: 2, role: "user", author: "Bob", ts: 2000, snippet: "[deploy] checklist lives in skills" },
+        ];
+        return Response.json({ results: limit ? results.slice(0, limit) : results });
+      },
+    };
+    return { env: { CONVERSATION_STUB: stub }, calls };
+  }
+
+  it("queries /searchMessages on the conversation stub and formats matches", async () => {
+    const { env, calls } = makeSearchEnv();
+    const out = await executeTool("session_search", { query: "deploy", limit: 2 }, env);
+    assert.equal(out.success, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].path, "/searchMessages");
+    assert.equal(calls[0].query, "deploy");
+    assert.equal(calls[0].limit, "2");
+    assert.equal(out.matches.length, 2);
+    assert.deepEqual(out.matches[0], { author: "Alice", ts: 1000, snippet: "we discussed [deploy] windows" });
+    assert.deepEqual(out.matches[1], { author: "Bob", ts: 2000, snippet: "[deploy] checklist lives in skills" });
+  });
+
+  it("defaults the limit when omitted", async () => {
+    const { env, calls } = makeSearchEnv();
+    const out = await executeTool("session_search", { query: "deploy" }, env);
+    assert.equal(out.success, true);
+    assert.equal(calls[0].limit, null);
+    assert.equal(out.matches.length, 2);
+  });
+
+  it("returns an error when the conversation stub is missing", async () => {
+    const out = await executeTool("session_search", { query: "deploy" }, {});
+    assert.equal(out.success, false);
+    assert.ok(out.error);
+  });
+
+  it("returns an error for a missing query", async () => {
+    const { env, calls } = makeSearchEnv();
+    const out = await executeTool("session_search", {}, env);
+    assert.equal(out.success, false);
+    assert.ok(out.error);
+    assert.equal(calls.length, 0);
   });
 });
