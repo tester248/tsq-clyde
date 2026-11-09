@@ -29,9 +29,16 @@ const makeEnv = (overrides = {}) => ({
 });
 
 describe("agent tools", () => {
-  it("AGENT_TOOLS declares search, fetch_url, and memory", () => {
+  it("AGENT_TOOLS declares search, fetch_url, memory, and the skills tools", () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
-    assert.deepEqual(names.sort(), ["fetch_url", "memory", "search"]);
+    assert.deepEqual(names.sort(), [
+      "fetch_url",
+      "memory",
+      "search",
+      "skill_manage",
+      "skill_view",
+      "skills_list",
+    ]);
   });
 
   it("search calls Tavily with the key header and maps results", async () => {

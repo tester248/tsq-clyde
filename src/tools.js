@@ -14,6 +14,16 @@ const MEMORY_DELIMITER = "§";
 // hygiene) — these are injected into the system prompt.
 const UNSAFE_MEMORY_PATTERN = /[\u0000-\u001f\u200b-\u200f\u202a-\u202e\ufeff]/;
 
+// Skills (Hermes-inspired): global, agent-managed SKILL.md documents in KV,
+// exposed with progressive disclosure (list → view → manage).
+export const SKILL_MAX_CHARS = 8000;
+export const SKILL_MAX_COUNT = 200;
+export const SKILL_SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+// Skills are multi-line documents, so unlike memory entries (single §-delimited
+// lines) tabs/newlines are allowed — but real control chars and zero-width
+// invisible unicode are still rejected (injection hygiene).
+const UNSAFE_SKILL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u200b-\u200f\u202a-\u202e\ufeff]/;
+
 async function fetchWithToolTimeout(url, init) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
@@ -89,7 +99,58 @@ const memoryTool = {
   },
 };
 
-export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool];
+const skillsListTool = {
+  type: "function",
+  function: {
+    name: "skills_list",
+    description:
+      "List all skills as compact metadata (name, description, category). " +
+      "Skills are reusable how-to documents. Start here to discover what exists; " +
+      "view a skill (skill_view) only when it is relevant to the task.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+  },
+};
+
+const skillViewTool = {
+  type: "function",
+  function: {
+    name: "skill_view",
+    description: "Read the full content of one skill by slug (see skills_list).",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Skill slug, e.g. deployment-checklist" },
+      },
+      required: ["name"],
+    },
+  },
+};
+
+const skillManageTool = {
+  type: "function",
+  function: {
+    name: "skill_manage",
+    description:
+      "Create, patch (replace), or delete a skill by slug. content is a full " +
+      "SKILL.md document with frontmatter (name, description, category) plus a " +
+      "markdown body (Procedure / Pitfalls). Create a skill to codify a reusable " +
+      "procedure so future turns can consult it.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "patch", "delete"] },
+        name: { type: "string", description: "Skill slug (lowercase, hyphens)" },
+        content: { type: "string", description: "Full SKILL.md content (create/patch)" },
+      },
+      required: ["action", "name"],
+    },
+  },
+};
+
+export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool, skillsListTool, skillViewTool, skillManageTool];
 
 async function tavilySearch(query, numResults, env) {
   const key = env.TAVILY_API_KEY;
@@ -208,7 +269,150 @@ const TOOL_IMPLS = {
   search: async (args, env) => runSearch(args.query, args.num_results, env),
   fetch_url: async (args, env) => fetchUrl(args.url, env),
   memory: async (args, env) => memoryImpl(args, env),
+  skills_list: async (args, env) => skillsListImpl(env),
+  skill_view: async (args, env) => skillViewImpl(args, env),
+  skill_manage: async (args, env) => skillManageImpl(args, env),
 };
+
+// ---- skills tool implementation (Phase 2, Hermes-inspired) ----
+
+// Skills are global SKILL.md documents in a dedicated KV namespace. The front
+// matter (name, description, category) is parsed on read so the store itself
+// is the single source of truth (no separate index to drift).
+
+function parseSkillFrontmatter(content) {
+  const m = String(content || "").match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!m) return null;
+  const meta = {};
+  for (const line of m[1].split("\n")) {
+    const eq = line.indexOf(":");
+    if (eq > 0) {
+      const key = line.slice(0, eq).trim();
+      const val = line.slice(eq + 1).trim().replace(/^"|"$/g, "");
+      if (key) meta[key] = val;
+    }
+  }
+  return { meta, body: m[2].trim() };
+}
+
+function isValidSkillSlug(name) {
+  return typeof name === "string" && name.length <= 64 && SKILL_SLUG_PATTERN.test(name);
+}
+
+async function skillsListImpl(env) {
+  const kv = env.SKILLS_KV;
+  if (!kv) return { success: false, error: "SKILLS_KV not configured" };
+  let list;
+  try {
+    list = await kv.list({});
+  } catch (err) {
+    return { success: false, error: `skills list failed: ${err?.message || err}` };
+  }
+  const skills = [];
+  for (const { name } of list.keys || []) {
+    let raw;
+    try {
+      raw = await kv.get(name);
+    } catch {
+      continue; // a transient read failure should not kill the whole catalog
+    }
+    const parsed = parseSkillFrontmatter(raw);
+    skills.push({
+      name,
+      description: parsed?.meta.description || "",
+      category: parsed?.meta.category || "general",
+    });
+  }
+  skills.sort((a, b) => a.name.localeCompare(b.name));
+  return { skills };
+}
+
+async function skillViewImpl(args, env) {
+  const kv = env.SKILLS_KV;
+  if (!kv) return { success: false, error: "SKILLS_KV not configured" };
+  const name = typeof args.name === "string" ? args.name : "";
+  if (!isValidSkillSlug(name)) {
+    return { success: false, error: `invalid skill slug: ${name}` };
+  }
+  let raw;
+  try {
+    raw = await kv.get(name);
+  } catch (err) {
+    return { success: false, error: `skill read failed: ${err?.message || err}` };
+  }
+  if (raw === null || raw === undefined) {
+    return { success: false, error: `no such skill: ${name}` };
+  }
+  return { name, content: raw };
+}
+
+async function skillManageImpl(args, env) {
+  const kv = env.SKILLS_KV;
+  if (!kv) return { success: false, error: "SKILLS_KV not configured" };
+  const action = args.action;
+  const name = typeof args.name === "string" ? args.name : "";
+  if (!["create", "patch", "delete"].includes(action)) {
+    return { success: false, error: `unknown skill action: ${action}` };
+  }
+  if (!isValidSkillSlug(name)) {
+    return { success: false, error: `invalid skill slug: ${name}` };
+  }
+
+  if (action === "delete") {
+    let exists;
+    try {
+      exists = (await kv.get(name)) !== null && (await kv.get(name)) !== undefined;
+    } catch (err) {
+      return { success: false, error: `skill read failed: ${err?.message || err}` };
+    }
+    if (!exists) return { success: false, error: `no such skill: ${name}` };
+    try {
+      await kv.delete(name);
+    } catch (err) {
+      return { success: false, error: `skill delete failed: ${err?.message || err}` };
+    }
+    return { success: true };
+  }
+
+  const content = typeof args.content === "string" ? args.content : "";
+  if (!content) return { success: false, error: "content is required for create/patch" };
+  if (content.length > SKILL_MAX_CHARS) {
+    return {
+      success: false,
+      error: `skill content ${content.length} chars exceeds the ${SKILL_MAX_CHARS}-char limit; trim or split into multiple skills`,
+    };
+  }
+  if (UNSAFE_SKILL_PATTERN.test(content)) {
+    return { success: false, error: "content rejected: contains invisible or control characters" };
+  }
+  const parsed = parseSkillFrontmatter(content);
+  if (!parsed || !parsed.meta.name || !parsed.meta.description) {
+    return { success: false, error: "content must start with frontmatter (name, description)" };
+  }
+  if (parsed.meta.name !== name) {
+    return { success: false, error: `frontmatter name (${parsed.meta.name}) does not match slug (${name})` };
+  }
+
+  try {
+    const existing = await kv.get(name);
+    if (action === "create" && existing !== null && existing !== undefined) {
+      return { success: false, error: `skill already exists: ${name} (use patch to replace)` };
+    }
+    if (action === "patch" && (existing === null || existing === undefined)) {
+      return { success: false, error: `no such skill: ${name}` };
+    }
+    if (action === "create") {
+      const list = await kv.list({});
+      if ((list.keys || []).length >= SKILL_MAX_COUNT) {
+        return { success: false, error: `skill library full (${SKILL_MAX_COUNT} skills); delete one first` };
+      }
+    }
+    await kv.put(name, content);
+  } catch (err) {
+    return { success: false, error: `skill write failed: ${err?.message || err}` };
+  }
+  return { success: true };
+}
 
 // ---- memory tool implementation ----
 
