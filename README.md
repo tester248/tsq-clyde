@@ -11,13 +11,14 @@ bot that answers `@Klyde` mentions with a tool-using agent loop.
   per-channel conversation pipeline, serialized per channel.
 - **`ConversationDO`** (`src/conversation_do.js`) — one Durable Object per
   Discord channel (keyed by `channel_id || guild_id || "global"`), holding a
-  rolling conversation history.
+  rolling conversation history plus bounded memory (channel notes + per-user
+  profiles).
 - **`processor.js`** — `processMessage` ties it together: loads history,
-  formats the LLM prompt (with author attribution), runs the agent loop, and
-  posts the reply.
+  formats the LLM prompt (with author attribution + memory blocks), runs the
+  agent loop, and posts the reply.
 - **`agent.js`** — `runAgentLoop`: a bounded, failure-tolerant tool loop.
-- **`tools.js`** — the agent's tools: `search` (multi-provider) and
-  `fetch_url`.
+- **`tools.js`** — the agent's tools: `search` (multi-provider), `fetch_url`,
+  and `memory` (bounded memory add/patch/remove).
 - **`ai.js`** — `callLLM`/`generateReply`: the provider fallback chain.
 
 ## Agent & AI pipeline
@@ -55,6 +56,20 @@ timeout).
 
 **Fast path:** greetings/trivial pings skip the tool loop entirely and answer
 instantly.
+
+**Bounded memory** (Hermes-inspired): the agent can persist durable facts via
+a `memory` tool — `target: "memory"` is this channel's shared notes (2200-
+char cap), `target: "user"` is the current asker's profile (1375-char cap).
+Entries are §-delimited; `add` appends (exact duplicates skipped), `patch`
+replaces a unique substring, `remove` deletes an entry. Over-capacity writes
+return a consolidation error listing current entries so the model can free
+space in one batch; content with invisible/control characters is rejected.
+Both stores live in the per-channel `ConversationDO` and are injected into the
+prompt each turn as system blocks with capacity fractions (`MEMORY (channel
+notes) [n/2200 chars]`, `USER PROFILE [n/1375 chars]`) — a few hundred tokens
+of durable context, always visible. `/clear` wipes history + channel memory
+but keeps user profiles (identity facts). Roadmap: skills (Phase 2) and
+cross-session search (Phase 3) build on this store.
 
 ## Reply attribution & status cleanup
 
@@ -112,7 +127,8 @@ so this path never runs — it stays as a zero-cost manual fallback.
   - `SEARCH_PROVIDER` — `"tavily,exa"` default.
 - **Secrets** (`wrangler secret put <NAME>` — never in the repo):
   `DISCORD_TOKEN`, `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_ID`, `GROQ_API_KEY`,
-  `INCEPTION_API_KEY`, `WUS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`.
+  `INCEPTION_API_KEY`, `WUS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`,
+  `ADMIN_IDS` (comma-separated Discord user IDs allowed to run `/clear_context`).
 
 > Note: Data Studio on the dashboard can only read SQL-API data. This
 > project persists via the KV storage API, so conversation state is **not**
@@ -136,3 +152,6 @@ so this path never runs — it stays as a zero-cost manual fallback.
   chunked Discord replies, truncation-narration fix.
 - `v0.4.0` — reply attribution: reply-to-message threading, `PING_AUTHOR`
   flag, author attribution in memory, and status-message cleanup.
+- `v0.5.0` — bounded memory: `memory` tool (add/patch/remove, 2200/1375
+  char caps), per-channel notes + per-user profiles in `ConversationDO`, and
+  prompt injection of both stores each turn.
