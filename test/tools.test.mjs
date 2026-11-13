@@ -29,11 +29,12 @@ const makeEnv = (overrides = {}) => ({
 });
 
 describe("agent tools", () => {
-  it("AGENT_TOOLS declares search, fetch_url, memory, the skills tools, and session_search", () => {
+  it("AGENT_TOOLS declares search, fetch_url, memory, skills, session_search, and minecraft", () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
     assert.deepEqual(names.sort(), [
       "fetch_url",
       "memory",
+      "minecraft",
       "search",
       "session_search",
       "skill_manage",
@@ -370,5 +371,154 @@ describe("session_search tool", () => {
     assert.equal(out.success, false);
     assert.ok(out.error);
     assert.equal(calls.length, 0);
+  });
+});
+
+describe("minecraft tool", () => {
+  const ADMIN = "809430270897160202";
+  const NON_ADMIN = "111111111111111111";
+
+  function mockRpc(routes) {
+    const realFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      const u = String(url);
+      for (const [match, handler] of routes) {
+        if (u.includes(match)) return handler(calls.length - 1);
+      }
+      return new Response("unexpected fetch", { status: 500 });
+    };
+    return { realFetch, calls };
+  }
+
+  const makeMcEnv = (overrides = {}) => ({
+    MC_BRIDGE_URL: "http://mc.internal:25590",
+    MC_BRIDGE_TOKEN: "mc-token",
+    ADMIN_IDS: ADMIN,
+    CURRENT_USER_ID: NON_ADMIN,
+    ...overrides,
+  });
+
+  it("status performs a GET with the bearer token and maps the response", async () => {
+    const { realFetch, calls } = mockRpc([
+      [
+        "/status",
+        () => json({ version: "26.3", tps: 20, uptime: 3600, playersNow: 2, playersMax: 20 }),
+      ],
+    ]);
+    try {
+      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
+      assert.equal(out.success, true);
+      assert.equal(out.version, "26.3");
+      assert.equal(out.tps, 20);
+      assert.equal(out.players, "2/20");
+      assert.equal(calls.length, 1);
+      assert.ok(calls[0].url.includes("/status"));
+      assert.equal(calls[0].init.headers.Authorization, "Bearer mc-token");
+      assert.equal(calls[0].init.method, "GET");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("players returns the player list", async () => {
+    const { realFetch, calls } = mockRpc([
+      ["/players", () => json({ players: ["Alice", "Bob"] })],
+    ]);
+    try {
+      const out = await executeTool("minecraft", { action: "players" }, makeMcEnv());
+      assert.equal(out.success, true);
+      assert.deepEqual(out.players, ["Alice", "Bob"]);
+      assert.ok(calls[0].url.includes("/players"));
+      assert.equal(calls[0].init.headers.Authorization, "Bearer mc-token");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("command as an admin POSTs the command and returns output", async () => {
+    const { realFetch, calls } = mockRpc([
+      [
+        "/command",
+        () => json({ ok: true, output: "Added Alice to the whitelist" }),
+      ],
+    ]);
+    try {
+      const env = makeMcEnv({ CURRENT_USER_ID: ADMIN });
+      const out = await executeTool("minecraft", { action: "command", command: "whitelist add Alice" }, env);
+      assert.equal(out.success, true);
+      assert.equal(out.output, "Added Alice to the whitelist");
+      assert.equal(calls.length, 1);
+      assert.ok(calls[0].url.includes("/command"));
+      assert.equal(calls[0].init.method, "POST");
+      assert.equal(calls[0].init.headers.Authorization, "Bearer mc-token");
+      assert.equal(JSON.parse(calls[0].init.body).command, "whitelist add Alice");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("command as a non-admin is refused without any fetch to the mod", async () => {
+    const { realFetch, calls } = mockRpc([["/command", () => json({ ok: true })]]);
+    try {
+      const out = await executeTool("minecraft", { action: "command", command: "op Alice" }, makeMcEnv());
+      assert.equal(out.success, false);
+      assert.ok(out.error);
+      assert.equal(calls.length, 0, "no RPC call should be made for a non-admin command");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("maps a 401 from the mod to { error }", async () => {
+    const { realFetch } = mockRpc([["/status", () => new Response("unauthorized", { status: 401 })]]);
+    try {
+      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
+      assert.equal(out.success, false);
+      assert.ok(out.error.includes("401"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("maps a 500 from the mod to { error }", async () => {
+    const { realFetch } = mockRpc([["/status", () => new Response("boom", { status: 500 })]]);
+    try {
+      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
+      assert.equal(out.success, false);
+      assert.ok(out.error.includes("500"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns { error } on a network failure instead of throwing", async () => {
+    const { realFetch } = mockRpc([["/status", () => { throw new Error("ECONNREFUSED"); }]]);
+    try {
+      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
+      assert.equal(out.success, false);
+      assert.ok(out.error);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns { error } when MC_BRIDGE_URL is missing", async () => {
+    const out = await executeTool("minecraft", { action: "status" }, makeMcEnv({ MC_BRIDGE_URL: undefined }));
+    assert.equal(out.success, false);
+    assert.ok(out.error);
+  });
+
+  it("returns { error } when MC_BRIDGE_TOKEN is missing", async () => {
+    const out = await executeTool("minecraft", { action: "status" }, makeMcEnv({ MC_BRIDGE_TOKEN: undefined }));
+    assert.equal(out.success, false);
+    assert.ok(out.error);
+  });
+
+  it("returns { error } for an unknown action", async () => {
+    const out = await executeTool("minecraft", { action: "explode" }, makeMcEnv());
+    assert.equal(out.success, false);
+    assert.ok(out.error);
   });
 });

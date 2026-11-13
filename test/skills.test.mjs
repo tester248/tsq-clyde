@@ -40,11 +40,12 @@ category: engineering
 `;
 
 describe("skills tools", () => {
-  it("AGENT_TOOLS declares search, fetch_url, memory, and the three skills tools plus session_search", () => {
+  it("AGENT_TOOLS declares all eight tools including minecraft", () => {
     const names = AGENT_TOOLS.map((t) => t.function.name);
     assert.deepEqual(names.sort(), [
       "fetch_url",
       "memory",
+      "minecraft",
       "search",
       "session_search",
       "skill_manage",

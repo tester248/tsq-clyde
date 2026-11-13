@@ -170,7 +170,27 @@ const sessionSearchTool = {
   },
 };
 
-export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool, skillsListTool, skillViewTool, skillManageTool, sessionSearchTool];
+const minecraftTool = {
+  type: "function",
+  function: {
+    name: "minecraft",
+    description:
+      "Query or control the Minecraft server via its bridge mod. Actions: " +
+      "status (version, TPS, uptime, player count), players (online player " +
+      "names), command (run a server command — admin only). Commands will be " +
+      "refused for non-admin users.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["status", "players", "command"] },
+        command: { type: "string", description: "Server command to run (action=command only)" },
+      },
+      required: ["action"],
+    },
+  },
+};
+
+export const AGENT_TOOLS = [searchTool, fetchUrlTool, memoryTool, skillsListTool, skillViewTool, skillManageTool, sessionSearchTool, minecraftTool];
 
 async function tavilySearch(query, numResults, env) {
   const key = env.TAVILY_API_KEY;
@@ -293,6 +313,7 @@ const TOOL_IMPLS = {
   skill_view: async (args, env) => skillViewImpl(args, env),
   skill_manage: async (args, env) => skillManageImpl(args, env),
   session_search: async (args, env) => sessionSearchImpl(args, env),
+  minecraft: async (args, env) => minecraftImpl(args, env),
 };
 
 // ---- session_search tool implementation (Phase 3) ----
@@ -327,6 +348,74 @@ async function sessionSearchImpl(args, env) {
     return { success: true, matches };
   } catch (err) {
     return { success: false, error: `search error: ${err?.message || err}` };
+  }
+}
+
+// ---- minecraft tool implementation (leg 2) ----
+
+// Talks to the Fabric bridge mod's HTTP RPC. Read-only actions (status,
+// players) are open to any channel member; mutating `command` is refused
+// unless the current asker is in ADMIN_IDS (mirrors the clear-context gate).
+// The gate is implemented here inline: tools.js cannot import isAdmin from
+// processor.js without a circular dependency.
+
+function isAdminEnv(userId, env) {
+  if (!userId) return false;
+  const raw = typeof env?.ADMIN_IDS === "string" ? env.ADMIN_IDS : "";
+  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return ids.includes(String(userId).trim());
+}
+
+async function minecraftImpl(args, env) {
+  const base = env.MC_BRIDGE_URL;
+  const token = env.MC_BRIDGE_TOKEN;
+  if (!base || !token) {
+    return { success: false, error: "MC_BRIDGE_URL/MC_BRIDGE_TOKEN not configured" };
+  }
+  const action = args.action;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  let url;
+  let init;
+  if (action === "status" || action === "players") {
+    url = `${base.replace(/\/$/, "")}/${action}`;
+    init = { method: "GET", headers };
+  } else if (action === "command") {
+    if (!isAdminEnv(env.CURRENT_USER_ID, env)) {
+      return { success: false, error: "server commands are restricted to admins" };
+    }
+    const command = typeof args.command === "string" ? args.command.trim() : "";
+    if (!command) return { success: false, error: "command is required" };
+    url = `${base.replace(/\/$/, "")}/command`;
+    init = { method: "POST", headers, body: JSON.stringify({ command }) };
+  } else {
+    return { success: false, error: `unknown minecraft action: ${action}` };
+  }
+
+  try {
+    const res = await fetchWithToolTimeout(url, init);
+    if (!res.ok) {
+      return { success: false, error: `minecraft ${action} failed: ${res.status}` };
+    }
+    const data = await res.json();
+    if (action === "status") {
+      return {
+        success: true,
+        version: data.version,
+        tps: data.tps,
+        uptime: data.uptime,
+        players: `${data.playersNow ?? 0}/${data.playersMax ?? 0}`,
+      };
+    }
+    if (action === "players") {
+      return { success: true, players: data.players || [] };
+    }
+    return { success: true, ok: data.ok, output: data.output || "" };
+  } catch (err) {
+    return { success: false, error: `minecraft ${action} error: ${err?.message || err}` };
   }
 }
 
