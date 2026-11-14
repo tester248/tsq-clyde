@@ -175,15 +175,15 @@ const minecraftTool = {
   function: {
     name: "minecraft",
     description:
-      "Query or control the Minecraft server via its bridge mod. Actions: " +
-      "status (version, TPS, uptime, player count), players (online player " +
-      "names), command (run a server command — admin only). Commands will be " +
-      "refused for non-admin users.",
+      "Query the Minecraft server through its bridge mod (read-only). Actions: " +
+      "status (version, TPS, uptime, player count), players (online player names), " +
+      "recent_chat (last chat messages), player_location (one player's coordinates " +
+      "and dimension). Use when the answer depends on live server state.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["status", "players", "command"] },
-        command: { type: "string", description: "Server command to run (action=command only)" },
+        action: { type: "string", enum: ["status", "players", "recent_chat", "player_location"] },
+        player: { type: "string", description: "Player name (player_location only)" },
       },
       required: ["action"],
     },
@@ -353,54 +353,40 @@ async function sessionSearchImpl(args, env) {
 
 // ---- minecraft tool implementation (leg 2) ----
 
-// Talks to the Fabric bridge mod's HTTP RPC. Read-only actions (status,
-// players) are open to any channel member; mutating `command` is refused
-// unless the current asker is in ADMIN_IDS (mirrors the clear-context gate).
-// The gate is implemented here inline: tools.js cannot import isAdmin from
-// processor.js without a circular dependency.
+// Routes through the MinecraftBridgeDO (outbound WS session holder). The mod
+// connects out to Cloudflare; the tool sends a query frame to the bridge DO,
+// which round-trips it to the mod and back. Read-only awareness actions only
+// (no commands in this slice).
 
-function isAdminEnv(userId, env) {
-  if (!userId) return false;
-  const raw = typeof env?.ADMIN_IDS === "string" ? env.ADMIN_IDS : "";
-  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  return ids.includes(String(userId).trim());
-}
+const MINECRAFT_ACTIONS = ["status", "players", "recent_chat", "player_location"];
 
 async function minecraftImpl(args, env) {
-  const base = env.MC_BRIDGE_URL;
-  const token = env.MC_BRIDGE_TOKEN;
-  if (!base || !token) {
-    return { success: false, error: "MC_BRIDGE_URL/MC_BRIDGE_TOKEN not configured" };
-  }
   const action = args.action;
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
-
-  let url;
-  let init;
-  if (action === "status" || action === "players") {
-    url = `${base.replace(/\/$/, "")}/${action}`;
-    init = { method: "GET", headers };
-  } else if (action === "command") {
-    if (!isAdminEnv(env.CURRENT_USER_ID, env)) {
-      return { success: false, error: "server commands are restricted to admins" };
-    }
-    const command = typeof args.command === "string" ? args.command.trim() : "";
-    if (!command) return { success: false, error: "command is required" };
-    url = `${base.replace(/\/$/, "")}/command`;
-    init = { method: "POST", headers, body: JSON.stringify({ command }) };
-  } else {
+  if (!MINECRAFT_ACTIONS.includes(action)) {
     return { success: false, error: `unknown minecraft action: ${action}` };
   }
+  if (action === "player_location" && !args.player) {
+    return { success: false, error: "player is required for player_location" };
+  }
+  const binding = env.MINECRAFT_BRIDGE_DO;
+  if (!binding || typeof binding.get !== "function" || typeof binding.idFromName !== "function") {
+    return { success: false, error: "MINECRAFT_BRIDGE_DO not configured" };
+  }
+
+  const stub = binding.get(binding.idFromName("minecraft"));
+  const query = { action };
+  if (args.player) query.player = args.player;
 
   try {
-    const res = await fetchWithToolTimeout(url, init);
-    if (!res.ok) {
-      return { success: false, error: `minecraft ${action} failed: ${res.status}` };
+    const res = await stub.fetch("https://bridge/query", {
+      method: "POST",
+      body: JSON.stringify(query),
+    });
+    const result = await res.json();
+    if (!result || result.ok !== true) {
+      return { success: false, error: result?.error || "minecraft error" };
     }
-    const data = await res.json();
+    const data = result.data || {};
     if (action === "status") {
       return {
         success: true,
@@ -410,10 +396,7 @@ async function minecraftImpl(args, env) {
         players: `${data.playersNow ?? 0}/${data.playersMax ?? 0}`,
       };
     }
-    if (action === "players") {
-      return { success: true, players: data.players || [] };
-    }
-    return { success: true, ok: data.ok, output: data.output || "" };
+    return { success: true, ...data };
   } catch (err) {
     return { success: false, error: `minecraft ${action} error: ${err?.message || err}` };
   }

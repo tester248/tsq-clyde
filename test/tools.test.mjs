@@ -375,150 +375,108 @@ describe("session_search tool", () => {
 });
 
 describe("minecraft tool", () => {
-  const ADMIN = "809430270897160202";
-  const NON_ADMIN = "111111111111111111";
-
-  function mockRpc(routes) {
-    const realFetch = globalThis.fetch;
+  // Fake MINECRAFT_BRIDGE_DO binding: get(idFromName(...)) returns a stub
+  // whose fetch handles /query and returns a canned result.
+  function makeBridgeEnv(result, opts = {}) {
     const calls = [];
-    globalThis.fetch = async (url, init) => {
-      calls.push({ url: String(url), init });
-      const u = String(url);
-      for (const [match, handler] of routes) {
-        if (u.includes(match)) return handler(calls.length - 1);
-      }
-      return new Response("unexpected fetch", { status: 500 });
+    const stub = {
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        return Response.json(result);
+      },
     };
-    return { realFetch, calls };
+    const binding = {
+      idFromName: () => "minecraft",
+      get: () => stub,
+    };
+    const env = { MINECRAFT_BRIDGE_DO: binding };
+    if (opts.noBinding) delete env.MINECRAFT_BRIDGE_DO;
+    return { env, calls };
   }
 
-  const makeMcEnv = (overrides = {}) => ({
-    MC_BRIDGE_URL: "http://mc.internal:25590",
-    MC_BRIDGE_TOKEN: "mc-token",
-    ADMIN_IDS: ADMIN,
-    CURRENT_USER_ID: NON_ADMIN,
-    ...overrides,
-  });
+  const okResult = (data) => ({ ok: true, data });
 
-  it("status performs a GET with the bearer token and maps the response", async () => {
-    const { realFetch, calls } = mockRpc([
-      [
-        "/status",
-        () => json({ version: "26.3", tps: 20, uptime: 3600, playersNow: 2, playersMax: 20 }),
-      ],
-    ]);
-    try {
-      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
-      assert.equal(out.success, true);
-      assert.equal(out.version, "26.3");
-      assert.equal(out.tps, 20);
-      assert.equal(out.players, "2/20");
-      assert.equal(calls.length, 1);
-      assert.ok(calls[0].url.includes("/status"));
-      assert.equal(calls[0].init.headers.Authorization, "Bearer mc-token");
-      assert.equal(calls[0].init.method, "GET");
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+  it("status routes through the bridge and maps the response", async () => {
+    const { env, calls } = makeBridgeEnv(
+      okResult({ version: "26.3", tps: 20, uptime: 3600, playersNow: 2, playersMax: 20 })
+    );
+    const out = await executeTool("minecraft", { action: "status" }, env);
+    assert.equal(out.success, true);
+    assert.equal(out.version, "26.3");
+    assert.equal(out.tps, 20);
+    assert.equal(out.players, "2/20");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.action, "status");
   });
 
   it("players returns the player list", async () => {
-    const { realFetch, calls } = mockRpc([
-      ["/players", () => json({ players: ["Alice", "Bob"] })],
-    ]);
-    try {
-      const out = await executeTool("minecraft", { action: "players" }, makeMcEnv());
-      assert.equal(out.success, true);
-      assert.deepEqual(out.players, ["Alice", "Bob"]);
-      assert.ok(calls[0].url.includes("/players"));
-      assert.equal(calls[0].init.headers.Authorization, "Bearer mc-token");
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+    const { env } = makeBridgeEnv(okResult({ players: ["Alice", "Bob"] }));
+    const out = await executeTool("minecraft", { action: "players" }, env);
+    assert.equal(out.success, true);
+    assert.deepEqual(out.players, ["Alice", "Bob"]);
   });
 
-  it("command as an admin POSTs the command and returns output", async () => {
-    const { realFetch, calls } = mockRpc([
-      [
-        "/command",
-        () => json({ ok: true, output: "Added Alice to the whitelist" }),
-      ],
-    ]);
-    try {
-      const env = makeMcEnv({ CURRENT_USER_ID: ADMIN });
-      const out = await executeTool("minecraft", { action: "command", command: "whitelist add Alice" }, env);
-      assert.equal(out.success, true);
-      assert.equal(out.output, "Added Alice to the whitelist");
-      assert.equal(calls.length, 1);
-      assert.ok(calls[0].url.includes("/command"));
-      assert.equal(calls[0].init.method, "POST");
-      assert.equal(calls[0].init.headers.Authorization, "Bearer mc-token");
-      assert.equal(JSON.parse(calls[0].init.body).command, "whitelist add Alice");
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+  it("recent_chat returns chat messages", async () => {
+    const messages = [
+      { player: "Alice", text: "hi", ts: 1 },
+      { player: "Bob", text: "yo", ts: 2 },
+    ];
+    const { env } = makeBridgeEnv(okResult({ messages }));
+    const out = await executeTool("minecraft", { action: "recent_chat" }, env);
+    assert.equal(out.success, true);
+    assert.equal(out.messages.length, 2);
+    assert.equal(out.messages[0].player, "Alice");
   });
 
-  it("command as a non-admin is refused without any fetch to the mod", async () => {
-    const { realFetch, calls } = mockRpc([["/command", () => json({ ok: true })]]);
-    try {
-      const out = await executeTool("minecraft", { action: "command", command: "op Alice" }, makeMcEnv());
-      assert.equal(out.success, false);
-      assert.ok(out.error);
-      assert.equal(calls.length, 0, "no RPC call should be made for a non-admin command");
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+  it("player_location returns a single player's location", async () => {
+    const { env, calls } = makeBridgeEnv(
+      okResult({ player: "Alice", x: 100, y: 64, z: -200, dimension: "overworld" })
+    );
+    const out = await executeTool("minecraft", { action: "player_location", player: "Alice" }, env);
+    assert.equal(out.success, true);
+    assert.equal(out.x, 100);
+    assert.equal(out.dimension, "overworld");
+    assert.equal(calls[0].body.player, "Alice");
   });
 
-  it("maps a 401 from the mod to { error }", async () => {
-    const { realFetch } = mockRpc([["/status", () => new Response("unauthorized", { status: 401 })]]);
-    try {
-      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
-      assert.equal(out.success, false);
-      assert.ok(out.error.includes("401"));
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+  it("surfaces a non-ok bridge result as { error }", async () => {
+    const { env } = makeBridgeEnv({ ok: false, error: "unknown player" });
+    const out = await executeTool("minecraft", { action: "player_location", player: "Zed" }, env);
+    assert.equal(out.success, false);
+    assert.match(out.error, /unknown player/);
   });
 
-  it("maps a 500 from the mod to { error }", async () => {
-    const { realFetch } = mockRpc([["/status", () => new Response("boom", { status: 500 })]]);
-    try {
-      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
-      assert.equal(out.success, false);
-      assert.ok(out.error.includes("500"));
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-  });
-
-  it("returns { error } on a network failure instead of throwing", async () => {
-    const { realFetch } = mockRpc([["/status", () => { throw new Error("ECONNREFUSED"); }]]);
-    try {
-      const out = await executeTool("minecraft", { action: "status" }, makeMcEnv());
-      assert.equal(out.success, false);
-      assert.ok(out.error);
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-  });
-
-  it("returns { error } when MC_BRIDGE_URL is missing", async () => {
-    const out = await executeTool("minecraft", { action: "status" }, makeMcEnv({ MC_BRIDGE_URL: undefined }));
+  it("returns { error } when the bridge binding is missing", async () => {
+    const { env } = makeBridgeEnv(okResult({}), { noBinding: true });
+    const out = await executeTool("minecraft", { action: "status" }, env);
     assert.equal(out.success, false);
     assert.ok(out.error);
   });
 
-  it("returns { error } when MC_BRIDGE_TOKEN is missing", async () => {
-    const out = await executeTool("minecraft", { action: "status" }, makeMcEnv({ MC_BRIDGE_TOKEN: undefined }));
+  it("returns { error } on a bridge fetch failure instead of throwing", async () => {
+    const stub = {
+      fetch: async () => {
+        throw new Error("bridge unreachable");
+      },
+    };
+    const binding = { idFromName: () => "minecraft", get: () => stub };
+    const out = await executeTool("minecraft", { action: "status" }, { MINECRAFT_BRIDGE_DO: binding });
     assert.equal(out.success, false);
-    assert.ok(out.error);
+    assert.match(out.error, /bridge unreachable/);
   });
 
   it("returns { error } for an unknown action", async () => {
-    const out = await executeTool("minecraft", { action: "explode" }, makeMcEnv());
+    const { env } = makeBridgeEnv(okResult({}));
+    const out = await executeTool("minecraft", { action: "command" }, env);
     assert.equal(out.success, false);
     assert.ok(out.error);
+  });
+
+  it("requires a player for player_location", async () => {
+    const { env, calls } = makeBridgeEnv(okResult({}));
+    const out = await executeTool("minecraft", { action: "player_location" }, env);
+    assert.equal(out.success, false);
+    assert.ok(out.error);
+    assert.equal(calls.length, 0, "no bridge call without a player");
   });
 });
