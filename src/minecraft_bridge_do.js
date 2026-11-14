@@ -24,6 +24,8 @@ export class MinecraftBridgeDO {
     this.pending = new Map(); // query id -> { resolve, timer }
     this.heartbeatTimer = null;
     this.status = { state: "idle", updatedAt: Date.now() };
+    // diagnostics for /status + /ai/mcprobe (never exposes secrets)
+    this.debug = { lastFrameType: null, lastFrameAt: null, helloAcceptedAt: null };
   }
 
   async fetch(request) {
@@ -33,16 +35,21 @@ export class MinecraftBridgeDO {
         return Response.json({
           ...this.status,
           connected: this.connected && !!this.socket,
+          socket: !!this.socket,
+          debug: this.debug,
         });
       case "/query": {
         const body = await request.json();
         return Response.json(await this.query(body));
       }
       case "/connect": {
-        const ws = request.cf?.websockets?.[0];
-        if (!ws) return new Response("no websocket", { status: 400 });
-        this.attachSocket(ws);
-        return new Response("ok");
+        // Canonical DO WebSocket pattern: this DO creates the pair, accepts
+        // the server side, and returns the 101 with the client side. The
+        // Worker forwards the upgrade request here.
+        const pair = new WebSocketPair();
+        const [client, server] = Object.values(pair);
+        this.attachSocket(server);
+        return new Response(null, { status: 101, webSocket: client });
       }
       default:
         return new Response("not found", { status: 404 });
@@ -73,9 +80,12 @@ export class MinecraftBridgeDO {
     } catch {
       return;
     }
+    this.debug.lastFrameType = frame.type;
+    this.debug.lastFrameAt = Date.now();
     if (frame.type === "hello") {
       if (frame.token === this.env.MC_BRIDGE_TOKEN) {
         this.connected = true;
+        this.debug.helloAcceptedAt = Date.now();
         this.status = { state: "connected", updatedAt: Date.now() };
         this.#send({ type: "hello", ok: true });
         if (this.heartbeatTimer === null) {
@@ -109,6 +119,8 @@ export class MinecraftBridgeDO {
     this.socket = null;
     this.connected = false;
     this.status = { state: "disconnected", updatedAt: Date.now() };
+    this.debug.lastFrameType = "close";
+    this.debug.lastFrameAt = Date.now();
     if (this.heartbeatTimer !== null) {
       this.deps.clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;

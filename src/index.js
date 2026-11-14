@@ -257,11 +257,12 @@ router.get("/ai/searchstatus", async (request, env) => {
 });
 
 // Minecraft bridge probe: reports whether the bridge DO binding is configured
-// and whether a mod is currently connected. Boolean-only — never exposes
-// server data.
+// and whether a mod is currently connected, plus last-frame diagnostics.
+// Boolean + frame-type only — never exposes server data or secrets.
 router.get("/ai/mcprobe", async (request, env) => {
   const configured = !!env.MINECRAFT_BRIDGE_DO && !!env.MC_BRIDGE_TOKEN;
   let connected = false;
+  let debug = null;
   if (configured) {
     try {
       const stub = env.MINECRAFT_BRIDGE_DO.get(
@@ -270,11 +271,12 @@ router.get("/ai/mcprobe", async (request, env) => {
       const res = await stub.fetch("https://bridge/status");
       const body = await res.json();
       connected = body.connected === true;
+      debug = body.debug || null;
     } catch {
       // treat as disconnected
     }
   }
-  return Response.json({ configured, connected });
+  return Response.json({ configured, connected, debug });
 });
 
 // Skills probe: read-only verification that the SKILLS_KV binding is wired
@@ -314,10 +316,11 @@ router.post("/gateway/connect", async (request, env) => {
 
 // Minecraft bridge: accepts the Fabric mod's OUTBOUND WebSocket connection.
 // The mod dials out to this endpoint (no inbound ports on the server). Auth:
-// Bearer token must match MC_BRIDGE_TOKEN. Returns the 101 upgrade with the
-// client side of the pair; the DO owns the server side.
-// NOTE: the WebSocket handshake must be an HTTP GET (RFC 6455) — Java's
-// HttpClient sends GET. POST is accepted too for flexibility.
+// Bearer token must match MC_BRIDGE_TOKEN. Per the canonical Durable Object
+// WebSocket pattern (CL docs), the Worker validates the upgrade + auth and
+// then FORWARDS the original request to the DO; the DO creates the
+// WebSocketPair, accepts the server side, and returns the 101 with the client
+// side. (The old cf.websockets transfer approach never delivered frames.)
 async function handleMinecraftBridgeConnect(request, env) {
   const auth = request.headers.get("authorization") || "";
   if (auth !== `Bearer ${env.MC_BRIDGE_TOKEN}`) {
@@ -326,12 +329,17 @@ async function handleMinecraftBridgeConnect(request, env) {
   if (!env.MINECRAFT_BRIDGE_DO) {
     return new Response("bridge not configured", { status: 503 });
   }
-  const pair = new WebSocketPair();
+  const upgrade = request.headers.get("Upgrade") || "";
+  if (upgrade.toLowerCase() !== "websocket") {
+    return new Response("Expected Upgrade: websocket", { status: 426 });
+  }
   const stub = env.MINECRAFT_BRIDGE_DO.get(
     env.MINECRAFT_BRIDGE_DO.idFromName("minecraft")
   );
-  await stub.fetch("https://bridge/connect", { cf: { websockets: [pair[1]] } });
-  return new Response(null, { status: 101, webSocket: pair[0] });
+  // The DO routes on /connect; rewrite the forwarded request's URL so the
+  // DO's route table matches (headers/body/upgrade are preserved).
+  const forwarded = new Request("https://bridge/connect", request);
+  return stub.fetch(forwarded);
 }
 
 router.get("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
