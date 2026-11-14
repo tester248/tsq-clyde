@@ -25,7 +25,7 @@ export class MinecraftBridgeDO {
     this.heartbeatTimer = null;
     this.status = { state: "idle", updatedAt: Date.now() };
     // diagnostics for /status + /ai/mcprobe (never exposes secrets)
-    this.debug = { lastFrameType: null, lastFrameAt: null, helloAcceptedAt: null };
+    this.debug = { lastFrameType: null, lastFrameAt: null, helloAcceptedAt: null, lastParseError: null };
   }
 
   async fetch(request) {
@@ -77,7 +77,10 @@ export class MinecraftBridgeDO {
     let frame;
     try {
       frame = JSON.parse(event.data);
-    } catch {
+    } catch (err) {
+      this.debug.lastFrameType = "<nonjson>";
+      this.debug.lastFrameAt = Date.now();
+      this.debug.lastParseError = String(err?.message || err).slice(0, 120);
       return;
     }
     this.debug.lastFrameType = frame.type;

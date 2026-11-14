@@ -81,6 +81,7 @@ public final class BridgeClient {
         if (ws != null) {
             try {
                 ws.sendText(json, true);
+                KlydeBridgeMod.LOGGER.info("Klyde bridge sent: {}", json);
             } catch (Exception e) {
                 KlydeBridgeMod.LOGGER.warn("Klyde bridge send failed: {}", e.toString());
             }
@@ -88,6 +89,7 @@ public final class BridgeClient {
     }
 
     private void handleFrame(String raw) {
+        KlydeBridgeMod.LOGGER.info("Klyde bridge received frame: {}", raw);
         JsonElement el;
         try {
             el = JsonParser.parseString(raw);
