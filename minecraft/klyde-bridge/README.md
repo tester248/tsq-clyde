@@ -5,6 +5,9 @@ awareness of this server. It connects **outbound** over WebSocket to the
 worker's `POST /minecraft/bridge/connect` endpoint — no inbound ports, no
 port-forwarding.
 
+**Status: builds verified for both 26.3 and 26.2** (Gradle 9.8.0, JDK 25).
+Artifact: `klyde-bridge-0.1.0.jar` in `build/libs/`.
+
 ## Protocol
 
 See `docs/superpowers/specs/2026-11-09-klyde-minecraft-leg-spec.md` §4.2.
@@ -12,31 +15,27 @@ Frames: `hello` (auth) / `query` / `result` / `ping` / `pong`.
 
 ## Build matrix
 
-One codebase, two supported game versions (edit `gradle.properties` or pass
-`-P` flags):
+One codebase, two supported game versions. `gradle.properties` defaults to
+26.3; edit the two lines (or use `-P` overrides) for 26.2:
 
 | Minecraft | Loader | Loom | Fabric API |
 |---|---|---|---|
 | 26.3 | 0.20.1 | 1.19-SNAPSHOT | 0.166.2+26.3 |
 | 26.2 | 0.20.1 | 1.19-SNAPSHOT | 0.161.0+26.2 |
 
-**Requires JDK 21+** (Minecraft 26.x). The current dev machine has JDK 17 —
-install a JDK 21 or newer before building.
-
-**Also required:** `yarn_mappings` in `gradle.properties` — look up the exact
-Yarn build for your Minecraft version at <https://fabricmc.net/develop/>.
+**Toolchain (verified):** JDK 21+ (built with JDK 25), Gradle 9.8.0.
+Minecraft 26.x ships unobfuscated, so there is **no mappings dependency** —
+no Yarn/Mojang mappings are needed or available.
 
 ## Build
 
 ```bash
-# Gradle (v8.x) or the wrapper:
-gradle build          # uses gradle.properties (default 26.3)
-
-# For 26.2:
+gradle build               # default: 26.3 (gradle.properties)
+# 26.2 via overrides:
 gradle build -Pminecraft_version=26.2 -Pfabric_api_version=0.161.0+26.2
 ```
 
-Output: `build/libs/klyde-bridge-<version>.jar` → drop into the server's
+Output: `build/libs/klyde-bridge-0.1.0.jar` → drop into the server's
 `mods/` folder.
 
 ## Configuration (`config/klyde-bridge.properties`)
@@ -63,7 +62,6 @@ announce=false
 - **Not** a chat bridge: the server already runs "Simple Discord Link" for
   Discord ⇄ in-game chat. Klyde only reads recent chat for awareness.
 - Read-only queries only. Admin command execution is a future slice.
-- Compile-time checkpoint: `ServerMessageEvents.CHAT_MESSAGE` and
-  `getAverageTickTime`/`getCurrentPlayerCount` resolve against Yarn mappings
-  for your version — if a signature shifted for 26.2/26.3, adjust in
-  `KlydeBridgeMod` / `QueryHandler` (one-line fixes).
+- Uses the 26.x unobfuscated toolchain: `net.fabricmc.fabric-loom` plugin,
+  no mappings, Java 25/`options.release = 25`. Verified builds for 26.3 and
+  26.2.

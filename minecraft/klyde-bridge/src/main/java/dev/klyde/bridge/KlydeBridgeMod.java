@@ -67,7 +67,7 @@ public final class KlydeBridgeMod implements ModInitializer {
         // by Klyde).
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
             String player = sender != null ? sender.getName().getString() : "?";
-            queryHandler.recordChat(player, message.content().getString(), System.currentTimeMillis());
+            queryHandler.recordChat(player, message.signedContent(), System.currentTimeMillis());
         });
 
         LOGGER.info("Klyde bridge initialized (announce={})", config.announce());

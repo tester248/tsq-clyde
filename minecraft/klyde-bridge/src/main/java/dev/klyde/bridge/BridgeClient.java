@@ -172,9 +172,9 @@ public final class BridgeClient {
             ws.request(1);
             if (mod.getConfig().announce()) {
                 mod.getServer().execute(() ->
-                    mod.getServer().getCommandManager().executeWithPrefix(
-                        mod.getServer().getCommandSource(),
-                        "say [Klyde] bridge connected"));
+                    mod.getServer().getPlayerList().broadcastSystemMessage(
+                        net.minecraft.network.chat.Component.literal("[Klyde] bridge connected"),
+                        false));
             }
         }
 

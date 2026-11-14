@@ -4,7 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
 
 /**
  * Implements the bridge's query surface. All methods are called on the
@@ -48,22 +48,22 @@ final class QueryHandler {
     }
 
     private JsonObject status(MinecraftServer server) {
-        double avgTick = server.getAverageTickTime(); // ms per tick
-        double tps = avgTick > 0 ? Math.min(20.0, 1000.0 / avgTick) : 20.0;
-        String version = server.getVersion();
+        long avgTickNanos = server.getAverageTickTimeNanos(); // nanos per tick
+        double tps = avgTickNanos > 0 ? Math.min(20.0, 1_000_000_000.0 / avgTickNanos) : 20.0;
+        String version = server.getServerVersion();
 
         JsonObject o = new JsonObject();
         o.addProperty("version", version);
         o.addProperty("tps", Math.round(tps * 100.0) / 100.0);
         o.addProperty("uptime", (System.nanoTime() - mod.serverStartNanos()) / 1_000_000_000L);
-        o.addProperty("playersNow", server.getPlayerManager().getCurrentPlayerCount());
-        o.addProperty("playersMax", server.getPlayerManager().getMaxPlayerCount());
+        o.addProperty("playersNow", server.getPlayerList().getPlayers().size());
+        o.addProperty("playersMax", server.getPlayerList().getMaxPlayers());
         return o;
     }
 
     private JsonObject players(MinecraftServer server) {
         JsonArray names = new JsonArray();
-        for (ServerPlayerEntity p : server.getPlayerManager().getPlayerList()) {
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             String name = p.getName().getString();
             if (mod.getConfig().isOptedOut(name)) {
                 names.add("[redacted]");
@@ -100,16 +100,16 @@ final class QueryHandler {
         if (mod.getConfig().isOptedOut(player)) {
             return error(player + " has opted out of location data");
         }
-        ServerPlayerEntity p = server.getPlayerManager().getPlayer(player);
+        ServerPlayer p = server.getPlayerList().getPlayer(player);
         if (p == null) {
             return error("player not online: " + player);
         }
         JsonObject o = new JsonObject();
         o.addProperty("player", player);
-        o.addProperty("x", p.getBlockPos().getX());
-        o.addProperty("y", p.getBlockPos().getY());
-        o.addProperty("z", p.getBlockPos().getZ());
-        o.addProperty("dimension", p.getWorld().getRegistryKey().getValue().toString());
+        o.addProperty("x", p.blockPosition().getX());
+        o.addProperty("y", p.blockPosition().getY());
+        o.addProperty("z", p.blockPosition().getZ());
+        o.addProperty("dimension", p.level().dimension().identifier().toString());
         return o;
     }
 
