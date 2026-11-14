@@ -32,14 +32,16 @@ WebSocket — see Minecraft leg).
 - Admin-gated `command` execution: deferred to a later slice.
 - Privacy: per-player opt-out is spec'd now (mod-side filtering before data leaves server; flags synced to KV; optional in-game announcement).
 
-**Progress:**
+**Progress (v0.8.0):**
 
-- [x] Spec + plan revised to WS-aware slice (commits `…`).
-- [x] `MinecraftBridgeDO` + WS accept route + tests.
-- [x] `minecraft` tool reworked to route through the bridge (awareness actions).
-- [x] `/mc` slash commands reworked to route through the bridge.
-- [ ] Deploy + `MC_BRIDGE_TOKEN` secret + `/ai/mcprobe` + README + tag `v0.8.0`.
-- [ ] Live hookup: Fabric mod (future slice) — see spec §"Mod slice".
+- [x] Spec + plan revised to WS-aware slice (`ab7b1da`).
+- [x] `MinecraftBridgeDO` + WS accept route (`ccd2594`) — authenticated hello, heartbeat, query/response round-trip with timeout.
+- [x] `minecraft` tool reworked to route through the bridge — awareness actions (`2e0cdad`).
+- [x] `/mc` slash commands test rework through the bridge (`301a8f0`).
+- [x] Deployed (`8b5ca6f1`); `MC_BRIDGE_TOKEN` secret set; `/ai/mcprobe` returns configured=true/connected=false (waiting for the mod).
+- [ ] Live hookup: Fabric mod (future slice) — see spec §"Open items".
+
+**Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS), admin command execution (ADMIN_IDS-gated), chat bridge, in-game invocation + "working on it" feedback.
 
 ## How to verify / known gaps
 

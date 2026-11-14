@@ -11,6 +11,7 @@ import { runRefusalProbe } from "./probe_refusal.js";
 
 export { ConversationDO } from "./conversation_do.js";
 export { GatewayDO } from "./gateway_do.js";
+export { MinecraftBridgeDO } from "./minecraft_bridge_do.js";
 
 const router = Router();
 
@@ -253,6 +254,27 @@ router.get("/ai/searchstatus", async (request, env) => {
   const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName(channel));
   const res = await stub.fetch("https://example.com/searchEnabled");
   return res;
+});
+
+// Minecraft bridge probe: reports whether the bridge DO binding is configured
+// and whether a mod is currently connected. Boolean-only — never exposes
+// server data.
+router.get("/ai/mcprobe", async (request, env) => {
+  const configured = !!env.MINECRAFT_BRIDGE_DO && !!env.MC_BRIDGE_TOKEN;
+  let connected = false;
+  if (configured) {
+    try {
+      const stub = env.MINECRAFT_BRIDGE_DO.get(
+        env.MINECRAFT_BRIDGE_DO.idFromName("minecraft")
+      );
+      const res = await stub.fetch("https://bridge/status");
+      const body = await res.json();
+      connected = body.connected === true;
+    } catch {
+      // treat as disconnected
+    }
+  }
+  return Response.json({ configured, connected });
 });
 
 // Skills probe: read-only verification that the SKILLS_KV binding is wired

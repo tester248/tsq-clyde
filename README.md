@@ -1,14 +1,20 @@
 # tsq-clyde
 
 Discord + Minecraft agent bot on Cloudflare Workers + Durable Objects. The
-live worker is `tsq-klyde`. Currently the Discord leg is active: a gateway
-bot that answers `@Klyde` mentions with a tool-using agent loop.
+live worker is `tsq-klyde`. The Discord leg is live (gateway bot answering
+`@Klyde` mentions with a tool-using agent loop); the Minecraft leg is being
+built around an outbound-WebSocket bridge to a Fabric mod (worker side live,
+mod pending).
 
 ## Architecture
 
 - **`GatewayDO`** (`src/gateway_do.js`) — singleton Durable Object that owns
   the outbound Discord WebSocket. Dispatches mention/reply events to the
   per-channel conversation pipeline, serialized per channel.
+- **`MinecraftBridgeDO`** (`src/minecraft_bridge_do.js`) — server-side socket
+  holder for the Fabric mod's outbound WebSocket (the mod dials OUT to
+  Cloudflare, so no inbound ports are needed). Authenticates the mod,
+  heartbeats, and round-trips tool queries to it.
 - **`ConversationDO`** (`src/conversation_do.js`) — one Durable Object per
   Discord channel (keyed by `channel_id || guild_id || "global"`), holding a
   rolling conversation history, bounded memory (channel notes + per-user
@@ -19,8 +25,9 @@ bot that answers `@Klyde` mentions with a tool-using agent loop.
 - **`agent.js`** — `runAgentLoop`: a bounded, failure-tolerant tool loop.
 - **`tools.js`** — the agent's tools: `search` (multi-provider), `fetch_url`,
   `memory` (bounded memory add/patch/remove), the skills trio
-  (`skills_list` / `skill_view` / `skill_manage`), and `session_search`
-  (FTS5 recall over past channel messages).
+  (`skills_list` / `skill_view` / `skill_manage`), `session_search`
+  (FTS5 recall over past channel messages), and `minecraft` (live server
+  awareness via the bridge).
 - **`ai.js`** — `callLLM`/`generateReply`: the provider fallback chain.
 
 ## Agent & AI pipeline
@@ -94,6 +101,16 @@ occupying prompt space. Pre-existing history is backfilled once on first
 access. Availability probe: `/ai/searchstatus?channel=<id>` (boolean only, no
 content).
 
+**Minecraft leg** (worker side live; mod pending): the Fabric mod dials OUT
+over WebSocket to `POST /minecraft/bridge/connect` (Bearer `MC_BRIDGE_TOKEN`,
+101 upgrade into `MinecraftBridgeDO`). The `minecraft` agent tool routes
+read-only awareness queries through the bridge: `status`, `players`,
+`recent_chat`, `player_location`. `/mc status` and `/mc players` slash
+commands expose the read-only info directly. The mod itself (Fabric) is a
+future slice; until it connects, the tool returns bridge-disconnected errors
+gracefully. Per-player privacy opt-out is spec'd (mod-side filtering).
+Probe: `/ai/mcprobe` (configured/connected booleans only).
+
 ## Reply attribution & status cleanup
 
 - **Reply-to-message threading** — the final answer is sent as a **reply
@@ -151,7 +168,8 @@ so this path never runs — it stays as a zero-cost manual fallback.
 - **Secrets** (`wrangler secret put <NAME>` — never in the repo):
   `DISCORD_TOKEN`, `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_ID`, `GROQ_API_KEY`,
   `INCEPTION_API_KEY`, `WUS_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`,
-  `ADMIN_IDS` (comma-separated Discord user IDs allowed to run `/clear_context`).
+  `ADMIN_IDS` (comma-separated Discord user IDs allowed to run `/clear_context`),
+  `MC_BRIDGE_TOKEN` (shared with the Minecraft bridge mod).
 
 > Note: Data Studio on the dashboard can only read SQL-API data. This
 > project persists via the KV storage API, so conversation state is **not**
@@ -187,3 +205,7 @@ so this path never runs — it stays as a zero-cost manual fallback.
 - `v0.7.0` — session search: append-only FTS5 index in `ConversationDO`
   (backfill, archive semantics across compaction/clear) + `session_search`
   tool + `/ai/searchstatus`.
+- `v0.8.0` — Minecraft leg (worker side): `MinecraftBridgeDO` outbound-WS
+  session holder + `POST /minecraft/bridge/connect`; `minecraft` awareness
+  tool (`status`/`players`/`recent_chat`/`player_location`) via the bridge;
+  read-only `/mc status|players`; `/ai/mcprobe`. Fabric mod pending.
