@@ -98,6 +98,48 @@ describe("worker wiring", () => {
     assert.ok(calls.some((c) => c.url.endsWith("/connect") && c.method === "POST"));
     await Promise.allSettled(background);
   });
+
+  it("minecraft bridge connect requires the bearer token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/connect", { method: "POST" }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it("minecraft bridge connect rejects a wrong token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/connect", {
+        method: "POST",
+        headers: { authorization: "Bearer wrong" },
+      }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it("minecraft bridge connect 503s when the DO binding is missing", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/connect", {
+        method: "POST",
+        headers: { authorization: "Bearer secret" },
+      }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 503);
+  });
 });
 
 describe("slash command registration", () => {
@@ -114,7 +156,7 @@ describe("slash command registration", () => {
         putUrl = u;
         putBody = JSON.parse(init.body);
         putAuth = init.headers.Authorization;
-        return Response.json([{ name: "ask" }, { name: "clear_context" }]);
+        return Response.json([{ name: "ask" }, { name: "clear_context" }, { name: "mc" }]);
       }
       throw new Error(`unexpected fetch: ${u}`);
     };
@@ -131,16 +173,23 @@ describe("slash command registration", () => {
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.equal(body.ok, true);
-      assert.deepEqual(body.registered, ["ask", "clear_context"]);
+      assert.deepEqual(body.registered, ["ask", "clear_context", "mc"]);
       assert.ok(putUrl.endsWith("/applications/APPID/commands"));
       assert.equal(putAuth, "Bot bot-token");
       assert.deepEqual(
         putBody.map((c) => c.name),
-        ["ask", "clear_context"]
+        ["ask", "clear_context", "mc"]
       );
       const ask = putBody.find((c) => c.name === "ask");
       assert.equal(ask.options[0].name, "prompt");
       assert.equal(ask.options[0].required, true);
+      const mc = putBody.find((c) => c.name === "mc");
+      assert.ok(mc, "expected an mc command");
+      assert.deepEqual(
+        mc.options.map((o) => o.name),
+        ["status", "players"]
+      );
+      assert.equal(mc.options[0].type, 1); // subcommand
     } finally {
       globalThis.fetch = realFetch;
     }

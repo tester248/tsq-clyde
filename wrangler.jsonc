@@ -42,6 +42,10 @@
       {
         "name": "GATEWAY_DO",
         "class_name": "GatewayDO"
+      },
+      {
+        "name": "MINECRAFT_BRIDGE_DO",
+        "class_name": "MinecraftBridgeDO"
       }
     ]
   },
@@ -95,6 +99,10 @@
     {
       "tag": "v8",
       "new_sqlite_classes": ["GatewayDO"]
+    },
+    {
+      "tag": "v9",
+      "new_sqlite_classes": ["MinecraftBridgeDO"]
     }
   ]
 }

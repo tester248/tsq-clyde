@@ -166,6 +166,14 @@ export const COMMANDS = [
     name: "clear_context",
     description: "Clear this channel's conversation memory (admins only)",
   },
+  {
+    name: "mc",
+    description: "Minecraft server info (read-only)",
+    options: [
+      { name: "status", description: "Server version, TPS, uptime, player count", type: 1 },
+      { name: "players", description: "Online player names", type: 1 },
+    ],
+  },
 ];
 
 // Register the global slash commands with Discord. Idempotent: PUT replaces
@@ -280,6 +288,26 @@ router.get("/gateway/status", async (request, env) => {
 router.post("/gateway/connect", async (request, env) => {
   const stub = gatewayStub(env);
   return await stub.fetch("https://gateway/connect", { method: "POST" });
+});
+
+// Minecraft bridge: accepts the Fabric mod's OUTBOUND WebSocket connection.
+// The mod dials out to this endpoint (no inbound ports on the server). Auth:
+// Bearer token must match MC_BRIDGE_TOKEN. Returns the 101 upgrade with the
+// client side of the pair; the DO owns the server side.
+router.post("/minecraft/bridge/connect", async (request, env) => {
+  const auth = request.headers.get("authorization") || "";
+  if (auth !== `Bearer ${env.MC_BRIDGE_TOKEN}`) {
+    return new Response("unauthorized", { status: 401 });
+  }
+  if (!env.MINECRAFT_BRIDGE_DO) {
+    return new Response("bridge not configured", { status: 503 });
+  }
+  const pair = new WebSocketPair();
+  const stub = env.MINECRAFT_BRIDGE_DO.get(
+    env.MINECRAFT_BRIDGE_DO.idFromName("minecraft")
+  );
+  await stub.fetch("https://bridge/connect", { cf: { websockets: [pair[1]] } });
+  return new Response(null, { status: 101, webSocket: pair[0] });
 });
 
 export default {
