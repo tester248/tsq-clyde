@@ -2,6 +2,7 @@
 
 import { processMessage } from "./processor.js";
 import { REFUSAL_SENTINEL, FRIENDLY_REFUSAL } from "./ai.js";
+import { executeTool } from "./tools.js";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 
@@ -199,6 +200,47 @@ export async function handleDiscordInteraction(body, rawBody, headers, env, exec
         return deferred;
       case "clear_context":
         return await processCommand(body, env);
+      case "mc": {
+        const subcommand = data.options?.[0]?.name || "";
+        if (subcommand !== "status" && subcommand !== "players") {
+          return new Response("not implemented", { status: 501 });
+        }
+        const deferred = new Response(JSON.stringify({ type: 5 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+        const run = async () => {
+          try {
+            const result = await executeTool("minecraft", { action: subcommand }, {
+              ...env,
+              CURRENT_USER_ID: body.member?.user?.id || body.user?.id,
+            });
+            let text;
+            if (!result.success) {
+              text = `Minecraft ${subcommand} error: ${result.error}`;
+            } else if (subcommand === "status") {
+              text = `🟢 ${result.version} — TPS ${result.tps}, up ${result.uptime}s, players ${result.players}`;
+            } else {
+              const list = result.players?.length ? result.players.join(", ") : "nobody";
+              text = `Online: ${list}`;
+            }
+            await sendInteractionFollowup(body.application_id, body.token, text);
+          } catch (err) {
+            console.error("mc command failed", err);
+            await sendInteractionFollowup(
+              body.application_id,
+              body.token,
+              "Minecraft status error — try again later."
+            );
+          }
+        };
+        if (execCtx) {
+          execCtx.waitUntil(run());
+        } else {
+          run();
+        }
+        return deferred;
+      }
       default:
         return new Response("not implemented", { status: 501 });
     }
