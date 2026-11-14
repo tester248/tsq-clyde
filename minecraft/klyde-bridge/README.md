@@ -30,13 +30,31 @@ no Yarn/Mojang mappings are needed or available.
 ## Build
 
 ```bash
-gradle build               # default: 26.3 (gradle.properties)
-# 26.2 via overrides:
-gradle build -Pminecraft_version=26.2 -Pfabric_api_version=0.161.0+26.2
+gradle clean build       # default: 26.3 (gradle.properties)
+# 26.2: edit gradle.properties (minecraft_version=26.2,
+# fabric_api_version=0.161.0+26.2) and rebuild.
 ```
 
 Output: `build/libs/klyde-bridge-0.1.0.jar` → drop into the server's
 `mods/` folder.
+
+> ⚠️ **Jars are per game version.** The built jar embeds its Minecraft
+> compatibility range (`fabric.mod.json` → `depends.minecraft`). A jar built
+> for 26.2 will be **rejected by a 26.3 server** (and vice versa) — exactly
+> the `HARD_DEP_INCOMPATIBLE_PRESELECTED` failure seen on first deploy.
+> Always rebuild after switching `gradle.properties`, and verify the range
+> inside the jar before deploying:
+>
+> ```powershell
+> # inspect the embedded fabric.mod.json
+> Add-Type -AssemblyName System.IO.Compression.FileSystem
+> $zip = [System.IO.Compression.ZipFile]::OpenRead("build/libs/klyde-bridge-0.1.0.jar")
+> $e = $zip.Entries | Where-Object { $_.FullName -eq "fabric.mod.json" }
+> (New-Object System.IO.StreamReader($e.Open())).ReadToEnd()
+> ```
+>
+> Suggested: name deployed jars by version (`klyde-bridge-0.1.0-mc26.3.jar`)
+> so the right one is obvious.
 
 ## Configuration (`config/klyde-bridge.properties`)
 
