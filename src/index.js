@@ -316,7 +316,9 @@ router.post("/gateway/connect", async (request, env) => {
 // The mod dials out to this endpoint (no inbound ports on the server). Auth:
 // Bearer token must match MC_BRIDGE_TOKEN. Returns the 101 upgrade with the
 // client side of the pair; the DO owns the server side.
-router.post("/minecraft/bridge/connect", async (request, env) => {
+// NOTE: the WebSocket handshake must be an HTTP GET (RFC 6455) — Java's
+// HttpClient sends GET. POST is accepted too for flexibility.
+async function handleMinecraftBridgeConnect(request, env) {
   const auth = request.headers.get("authorization") || "";
   if (auth !== `Bearer ${env.MC_BRIDGE_TOKEN}`) {
     return new Response("unauthorized", { status: 401 });
@@ -330,7 +332,10 @@ router.post("/minecraft/bridge/connect", async (request, env) => {
   );
   await stub.fetch("https://bridge/connect", { cf: { websockets: [pair[1]] } });
   return new Response(null, { status: 101, webSocket: pair[0] });
-});
+}
+
+router.get("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
+router.post("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
 
 export default {
   async fetch(request, env, ctx) {

@@ -111,6 +111,20 @@ describe("worker wiring", () => {
     assert.equal(res.status, 401);
   });
 
+  it("minecraft bridge connect accepts the GET handshake (RFC 6455)", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    // Java's WebSocket client handshakes with GET — without a token it must
+    // still be routed (401), proving the route matches GET.
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/connect", { method: "GET" }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
   it("minecraft bridge connect rejects a wrong token", async () => {
     const { ctx } = makeCtx();
     const env = makeEnv([]);
