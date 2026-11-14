@@ -1,6 +1,9 @@
 # Klyde Minecraft Leg — Design Spec
 
-> **Status:** Design spec for review. No code until approved.
+> **Status:** REVISED 2026-11-14 (decisions locked with user). Supersedes the
+> original HTTP-based design below for transport and slice scope. The original
+> text is retained as "Prior design (superseded)" for history.
+
 > **Prior art:** Consolidates planning already recorded in this repo:
 > - `2026-11-05-klyde-agent-slice1-web-spec.md` — "the Minecraft mod's RPC
 >   becomes another 'tool' alongside web search" (the loop is deliberately
@@ -8,6 +11,174 @@
 >   (Minecraft-specific; planned)".
 > - `2026-11-08-klyde-wus-escalation-spec.md` — "the Minecraft path (future)".
 > - README intro: "Discord + Minecraft agent bot on Cloudflare Workers."
+
+## 0. Revision summary (2026-11-14) — locked decisions
+
+| Topic | Locked decision |
+|---|---|
+| Transport | **Outbound WebSocket** — the Fabric mod dials OUT to a Worker-owned `MinecraftBridgeDO` (sibling of `GatewayDO`). Works behind NAT on free hosting; no inbound ports; enables server-pushed events later. |
+| First slice | **Awareness slice** — tool actions `status`, `players`, `recent_chat`, `player_location`. All read-only. |
+| Slash commands | Keep `/mc status`, `/mc players` (read-only) alongside the agent tool. |
+| Admin commands | Deferred — no `command` action in this slice. |
+| Privacy | Per-player opt-out is in-scope for the spec (mod-side filtering; optional announcement). |
+| Tool gating | Read-only now; admin-gated commands come later. |
+
+## 1. Intent
+
+Give Klyde visibility and control over the user's **Fabric** server (game
+versions **26.2 / 26.3**) through a **server-side mod** that exposes a small
+RPC surface. The mod is a thin, passive sensor: it holds an outbound
+WebSocket to Cloudflare, answers targeted queries on demand, and never
+streams bulk state. The Worker is the brain; "the mod's RPC becomes another
+tool" exactly as the slice-1 spec reserved.
+
+## 2. Environment & constraints (facts)
+
+- Server: **Fabric** (mod loader), game **26.2 and 26.3**.
+- Server runs on **free hosting with limited resources** — the mod must stay
+  lightweight (compute + storage), and the server is **behind NAT** (no
+  inbound connections). Hence outbound-WS transport.
+- Server is **not publicly reachable yet**; live hookup is a follow-up
+  verification step. All Worker-side code is built and unit-tested against a
+  mock bridge first.
+
+## 3. Goals / Non-goals
+
+**Goals**
+- A lightweight Fabric mod (`klyde-bridge`) exposing read-only, on-demand RPC.
+- A `MinecraftBridgeDO` Durable Object that owns the outbound WebSocket
+  session (accepts the mod's connection, heartbeats, serializes
+  query/response, reconnects).
+- A `minecraft` agent tool (actions: `status`, `players`, `recent_chat`,
+  `player_location`) that routes through the bridge DO — reusing the
+  existing tool loop, env plumbing, and error conventions.
+- Read-only `/mc status` and `/mc players` slash commands.
+- Auth between mod and Worker via a shared bearer token (`MC_BRIDGE_TOKEN`).
+- Per-player privacy opt-out: mod-side flag filters personal data before it
+  leaves the server; flags synced to KV; optional in-game announcement.
+- Tool failures degrade gracefully (plain `{ error }`, loop feeds back to the
+  model, never crashes the reply).
+
+**Non-goals (this slice)**
+- No in-game autonomous entity / bot player.
+- No admin `command` execution yet (deferred slice).
+- No chat bridge (Discord ⇄ in-game) yet (separate slice; WS transport makes
+  it feasible later).
+- No RCON-based design.
+- No UUIDs/IPs in tool output (minimal surface until privacy work lands — but
+  opt-out is spec'd now).
+
+## 4. Architecture
+
+### 4.1 Transport — outbound WebSocket
+
+```
+Fabric mod (klyde-bridge)          MinecraftBridgeDO (Worker)
+   │  dials OUT over WebSocket          │  accepts connection
+   │  (auth: Bearer token)              │  heartbeats
+   │  answers queries on demand          │  serializes query/response
+   └─────────────────────────────────────┘  per server
+```
+
+- The mod is **stateless and passive**: it connects out (no inbound ports),
+  listens for query frames, and responds. No polling, no bulk streaming.
+- `MinecraftBridgeDO` (id `"minecraft"`) mirrors the `GatewayDO` muscle:
+  holds the live socket, heartbeat watchdog, and a request/response router.
+- Server-pushed events (chat, join/leave) are a natural extension later; the
+  protocol reserves an `event` frame type.
+
+### 4.2 Protocol (JSON frames over the WS)
+
+| Direction | Frame | Purpose |
+|---|---|---|
+| mod → Worker | `{"type":"hello","token":"…"}` | first frame; auth |
+| Worker → mod | `{"type":"hello","ok":true}` | accepted (else close) |
+| Worker → mod | `{"type":"query","id":1,"action":"status"}` | request |
+| mod → Worker | `{"type":"result","id":1,"ok":true,"data":{…}}` | success |
+| mod → Worker | `{"type":"result","id":1,"ok":false,"error":"…"}` | failure |
+| Worker → mod | `{"type":"ping"}` | heartbeat (30s) |
+| mod → Worker | `{"type":"pong"}` | heartbeat reply |
+| mod → Worker | `{"type":"event","event":"chat","data":{…}}` | (reserved, later) |
+
+- Queries are bounded (per-action cap) and **targeted** — the mod answers
+  only what's asked.
+- Each query has a timeout (default 10s); timeout → `{ error }` to the tool.
+
+### 4.3 The mod's RPC surface (awareness slice)
+
+| Action | Returns | Cap |
+|---|---|---|
+| `status` | `{version, tps, uptime, playersNow, playersMax}` | — |
+| `players` | `{players:["Alice",…]}` | names only, ≤100 |
+| `recent_chat` | `{messages:[{player, text, ts}]}` | last 20 |
+| `player_location` | `{player, x, y, z, dimension}` | one player |
+
+- Implemented with Fabric API event hooks (cheap, on-demand reads).
+- Player data is filtered by the opt-out flag **before** response (see §4.5).
+
+### 4.4 Worker side — `minecraft` tool
+
+```jsonc
+{ "name": "minecraft", "parameters": {
+    "action": { "type": "string", "enum": ["status","players","recent_chat","player_location"] },
+    "player": { "type": "string", "description": "player name (player_location only)" }
+} }
+```
+
+- Env: `MC_BRIDGE_TOKEN` (secret). The bridge DO binding is
+  `MINECRAFT_BRIDGE_DO`.
+- The tool routes through `env.MINECRAFT_BRIDGE_DO.get(idFromName("minecraft"))`
+  → `stub.fetch("https://bridge/query", …)`.
+- Reads: no admin gate needed (read-only slice).
+- Errors: bridge disconnected / query timeout / non-ok result → `{ error }`,
+  same shape as other tools.
+- `/mc status` and `/mc players` slash commands call the tool and followup.
+
+### 4.5 Privacy opt-out (spec'd, implemented with the mod slice)
+
+- Per-player flag in the mod's config (`klyde-bridge.properties`):
+  `optout.<playername>=true`.
+- The mod filters personal data (location, recent chat) before it leaves the
+  server; opt-out players appear in `/players` as `[redacted]` or are
+  omitted (config choice).
+- Flags are synced to KV by the mod or via a config-side sync endpoint.
+- Optional announcement to players (config bool) when Klyde is active.
+
+## 5. Review Focus (failure modes tests must pin)
+
+1. `MinecraftBridgeDO` accepts a connection, authenticates the hello token,
+   and rejects bad tokens.
+2. Query→response round-trip over a fake socket; timeout yields `{ error }`.
+3. Tool: each action maps the data correctly; bridge disconnected → error;
+   bridge error → error; missing token/bridge → error; unknown action → error.
+4. Slash commands route through the tool and followup; mod failure → friendly
+   error.
+5. `AGENT_TOOLS` has 8 tools (minecraft included).
+6. Read-only: no command execution path exists in this slice.
+
+## 6. Open items (future slices)
+
+- Admin command execution (`command` action + `ADMIN_IDS` gate).
+- Chat bridge (Discord ⇄ in-game) via the reserved `event` frames.
+- In-game invocation (`@Klyde` in chat) and "working on it" in-game feedback.
+- Mod slice: Fabric mod implementation, deployment, reachability (outbound
+  WS needs the host to allow outbound connections — generally allowed).
+
+## 7. Definition of done
+
+- Tests green (bridge DO + tool + slash commands).
+- Live (Worker side): `/ai/mcprobe` reports bridge configured; slash commands
+  respond with friendly errors until a mod connects.
+- README section + release tag (`v0.8.0`).
+
+---
+
+## Prior design (superseded 2026-11-14)
+
+The original spec (HTTP-based, inbound reachability, `command` action) is
+archived in git history. Key deltas: transport (inbound HTTP → outbound WS),
+slice (status/players/command → awareness), and privacy (absent → spec'd).
+
 
 ## 1. Intent
 

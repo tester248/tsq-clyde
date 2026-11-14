@@ -1,75 +1,82 @@
-# Klyde Minecraft Leg (Worker Side) — Implementation Plan
+# Klyde Minecraft Leg (Revised: Outbound-WS Awareness Slice) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `minecraft` agent tool that talks to the Fabric mod's HTTP RPC (`status` / `players` / `command`), with mutating commands gated behind `ADMIN_IDS`, plus read-only `/mc status` and `/mc players` slash commands.
+**Goal:** Rebuild the Minecraft leg around an outbound-WebSocket bridge: a `MinecraftBridgeDO` holding the mod's session, a `minecraft` agent tool (awareness actions) routing through it, and read-only `/mc` slash commands. No admin commands in this slice.
 
-**Architecture:** Tool def + impl in `src/tools.js` (reuses `CONVERSATION_STUB`/`CURRENT_USER_ID` plumbing); command registration + interaction handler in `src/index.js`/`src/discord.js`. New secrets: `MC_BRIDGE_URL`, `MC_BRIDGE_TOKEN`. No new DOs/KV/migrations.
+**Architecture:** New `MinecraftBridgeDO` Durable Object (+ wrangler binding + migration); WS-accept route in `index.js`; `minecraft` tool in `src/tools.js` routes via the bridge stub; `/mc` handler in `src/discord.js`.
 
-**Spec:** `docs/superpowers/specs/2026-11-09-klyde-minecraft-leg-spec.md`
-
-## Locked decisions (from spec §6, recommended defaults)
-
-- Mod repo location: sibling folder `minecraft/klyde-bridge/` (future slice).
-- Deny-list in mod: conservative (`op`, `deop`, `stop`, `ban`, `pardon`, server-wide) — mod-side, future slice.
-- Discord UI: **agent tool + read-only slash commands** (`/mc status`, `/mc players`).
-- Reachability: cloudflared tunnel when opened (later).
+**Spec:** `docs/superpowers/specs/2026-11-09-klyde-minecraft-leg-spec.md` (revised)
 
 ## Global Constraints
 
-- Tool actions: `status`, `players` (GET, read-only, any member) and `command` (POST, admin-only via `ADMIN_IDS`).
-- `Authorization: Bearer <MC_BRIDGE_TOKEN>` header on every RPC call.
-- Non-2xx / network / missing-config → `{ error }` (never throws).
-- Tool is part of the agent loop; no `processor.js` changes.
-- `AGENT_TOOLS` grows to 8.
+- Outbound WS from the mod; auth via `MC_BRIDGE_TOKEN` hello frame.
+- Tool actions: `status`, `players`, `recent_chat`, `player_location` — read-only, routed through the bridge DO.
+- Query timeout (10s) → `{ error }`; bridge disconnected → `{ error }`.
+- No command execution path in this slice.
+- `AGENT_TOOLS` = 8 tools.
+- New binding `MINECRAFT_BRIDGE_DO` (class `MinecraftBridgeDO`), migration `v9`.
 
 ## Review Focus
 
-- status/players map response + send bearer header.
-- command refused for non-admin (no fetch); allowed for admin (POST).
-- 401/500/network → `{ error }` with status.
-- Missing secrets → clean `{ error }`.
-- Slash commands registered (COMMANDS) and handled as read-only.
+- Bridge accepts + authenticates hello; rejects bad token.
+- Query/response round-trip; timeout.
+- Tool: action mapping, bridge error/disconnected → `{ error }`, missing config → error, unknown action → error.
+- Slash commands route through tool; friendly error on mod failure.
+- Worker tests include `test/discord-mc.test.mjs`.
 
 ---
 
-### Task 1: minecraft tool
+### Task 1: MinecraftBridgeDO + WS accept route
 
-**Files:** Modify `src/tools.js`; Test `test/tools.test.mjs`
+**Files:** New `src/minecraft_bridge_do.js`; modify `wrangler.jsonc` (binding + migration `v9`), `src/index.js` (route); Test new `test/minecraft_bridge_do.test.mjs`
 
 **Interfaces:**
-- Produces: `minecraft` entry in `AGENT_TOOLS`/`TOOL_IMPLS`; uses `env.MC_BRIDGE_URL`, `env.MC_BRIDGE_TOKEN`, `env.ADMIN_IDS`, `env.CURRENT_USER_ID`.
+- Produces: `MinecraftBridgeDO` class (fetch `/status`, `/query`, `/connect`); WS-accept route `POST /minecraft/bridge/connect` (token-gated).
 
-- [ ] **Step 1: Write failing tests** — mock fetch + admin env: status GET with header; players GET; command POST as admin; command refused as non-admin (no fetch); 401 → error; 500 → error; network throw → error; missing URL/token → error; declaration count 8.
+- [ ] **Step 1: Write failing tests** — fake socket (deps): connect+hello ok; bad token rejected; query round-trip; query timeout; status reports connected/disconnected.
 - [ ] **Step 2: Run tests, confirm FAIL.**
-- [ ] **Step 3: Implement** — def + impl (bearer header, gate, error mapping).
+- [ ] **Step 3: Implement** — DO class (socket accept, heartbeat, query router); index.js route; wrangler binding/migration.
 - [ ] **Step 4: Run tests, confirm PASS.**
-- [ ] **Step 5: Commit** — `feat(tools): add minecraft RPC tool`.
+- [ ] **Step 5: Commit** — `feat(bridge): MinecraftBridgeDO + WS accept`.
 
-### Task 2: read-only slash commands
+### Task 2: minecraft tool (awareness) via bridge
 
-**Files:** Modify `src/index.js` (COMMANDS), `src/discord.js` (interaction handler); Test `test/worker.test.mjs` + `test/discord-reply.test.mjs`
+**Files:** Modify `src/tools.js`; Test `test/tools.test.mjs` (rework minecraft block)
 
 **Interfaces:**
-- Produces: `/mc status` + `/mc players` in COMMANDS; `mc` subcommand routing in `handleDiscordInteraction` that runs the tool's read-only actions and followups the result.
+- Produces: `minecraft` tool def (4 actions, no command) + impl routing via `env.MINECRAFT_BRIDGE_DO.get(idFromName("minecraft"))` `/query`.
 
-- [ ] **Step 1: Write failing tests** — registration PUT includes `mc` with options; interaction "mc status" → followup with players/status output; non-2xx from the mod → friendly error followup.
+- [ ] **Step 1: Write failing tests** — fake bridge stub: status/players/recent_chat/player_location mapping; bridge error → `{ error }`; disconnected → `{ error }`; missing token/bridge → error; unknown action → error; declaration count 8.
 - [ ] **Step 2: Run tests, confirm FAIL.**
-- [ ] **Step 3: Implement** — command defs + handler wiring.
+- [ ] **Step 3: Implement** — def + impl.
+- [ ] **Step 4: Run tests, confirm PASS.**
+- [ ] **Step 5: Commit** — `feat(tools): minecraft awareness tool via bridge`.
+
+### Task 3: /mc slash commands via bridge
+
+**Files:** Modify `src/discord.js`; Test `test/discord-mc.test.mjs` (rework mock)
+
+**Interfaces:**
+- Produces: `/mc status|players` follows the tool through the bridge; friendly error on failure.
+
+- [ ] **Step 1: Write failing tests** — fake bridge env: status/players followup; mod failure → friendly error.
+- [ ] **Step 2: Run tests, confirm FAIL.**
+- [ ] **Step 3: Implement** — handler wiring to bridge-based tool.
 - [ ] **Step 4: Run full suite.**
-- [ ] **Step 5: Commit** — `feat(discord): add read-only /mc slash commands`.
+- [ ] **Step 5: Commit** — `feat(discord): /mc commands via bridge`.
 
-### Task 3: Deploy + README + tag
+### Task 4: Deploy + probe + README + STATUS + tag
 
-- [ ] **Step 1:** `npx wrangler deploy`; confirm `/gateway/status` connected.
-- [ ] **Step 2:** Set secrets `MC_BRIDGE_URL`, `MC_BRIDGE_TOKEN` (placeholder values now; real ones when reachable).
-- [ ] **Step 3:** README — "Minecraft leg" section (tool, gating, secrets, roadmap incl. mod slice).
-- [ ] **Step 4:** Commit README (`docs: document minecraft leg`).
-- [ ] **Step 5:** Tag `v0.8.0` and push. Note: live RPC verification deferred until server reachable (spec §7).
+- [ ] **Step 1:** `npx wrangler deploy`; confirm `/gateway/status` connected; set `MC_BRIDGE_TOKEN` secret.
+- [ ] **Step 2:** Add `/ai/mcprobe` (bridge configured + connected state) — boolean only.
+- [ ] **Step 3:** README Minecraft leg section; STATUS.md progress checkboxes.
+- [ ] **Step 4:** Commit (`docs: document minecraft leg v0.8.0`).
+- [ ] **Step 5:** Tag `v0.8.0` and push.
 
 ## Self-Review
 
-1. Spec coverage: tool (T1), slash commands (T2), deploy/README/tag (T3).
+1. Spec coverage: bridge (T1), tool (T2), slash (T3), deploy/docs/tag (T4).
 2. Each step is one checkable action.
-3. Type consistency: env names match spec; gate logic mirrors clear-context.
-4. Review Focus all mapped to T1/T2 tests.
+3. Type consistency: env/binding names match spec; stub keys match tool/bridge.
+4. Review Focus all mapped to T1–T3 tests.
