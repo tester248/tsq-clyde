@@ -54,14 +54,35 @@ public final class BridgeConfig {
                 KlydeBridgeMod.LOGGER.warn("Could not read klyde-bridge.properties", e);
             }
         } else {
-            KlydeBridgeMod.LOGGER.warn(
-                "klyde-bridge.properties not found at {} — bridge disabled until configured",
-                configPath
-            );
+            // Standard mod behavior: ship a default template on first boot so
+            // operators have a place to fill in the bridge URL/token.
+            try {
+                Files.writeString(configPath, DEFAULT_TEMPLATE);
+                KlydeBridgeMod.LOGGER.info(
+                    "Created default config at {} — edit it (bridge.url / bridge.token) and restart to enable the bridge",
+                    configPath
+                );
+            } catch (IOException e) {
+                KlydeBridgeMod.LOGGER.warn("Could not write default klyde-bridge.properties", e);
+            }
         }
 
         return new BridgeConfig(url, token, announce, optedOut);
     }
+
+    private static final String DEFAULT_TEMPLATE =
+        "# Klyde Bridge configuration\n"
+            + "# Required: the worker's bridge endpoint and the shared secret\n"
+            + "# (must match the MC_BRIDGE_TOKEN secret on the Cloudflare worker).\n"
+            + "bridge.url=wss://tsq-klyde.deezgames.workers.dev/minecraft/bridge/connect\n"
+            + "bridge.token=\n"
+            + "\n"
+            + "# Optional: announce in-game when the bridge connects\n"
+            + "announce=false\n"
+            + "\n"
+            + "# Optional: per-player privacy opt-out (excludes them from location/chat data)\n"
+            + "#optout.Alice=true\n"
+            + "#optout.Bob=true\n";
 
     public String bridgeUrl() {
         return bridgeUrl;

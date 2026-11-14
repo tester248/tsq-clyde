@@ -58,6 +58,10 @@ Output: `build/libs/klyde-bridge-0.1.0.jar` → drop into the server's
 
 ## Configuration (`config/klyde-bridge.properties`)
 
+**Created automatically on first boot** (with placeholder values) at
+`config/klyde-bridge.properties` in the server's config directory. Edit it,
+then restart the server to apply.
+
 ```properties
 # Required
 bridge.url=wss://tsq-klyde.deezgames.workers.dev/minecraft/bridge/connect
