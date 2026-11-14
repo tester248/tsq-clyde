@@ -39,7 +39,8 @@ WebSocket — see Minecraft leg).
 - [x] `minecraft` tool reworked to route through the bridge — awareness actions (`2e0cdad`).
 - [x] `/mc` slash commands test rework through the bridge (`301a8f0`).
 - [x] Deployed (`8b5ca6f1`); `MC_BRIDGE_TOKEN` secret set; `/ai/mcprobe` returns configured=true/connected=false (waiting for the mod).
-- [ ] Live hookup: Fabric mod (future slice) — see spec §"Open items".
+- [x] Fabric mod scaffold (`4e44d80`): `minecraft/klyde-bridge/` — outbound WS client, hello auth, query handling (status/players/recent_chat/player_location), opt-out filtering, announce; build matrix 26.3/26.2 (loom 1.19-SNAPSHOT, loader 0.20.1). **Not yet built/run** — needs JDK 21 and the exact `yarn_mappings` value.
+- [ ] Live hookup: install JDK 21, fill `yarn_mappings`, build, deploy mod to server with config, confirm `/ai/mcprobe` flips connected=true.
 
 **Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS — scaffold in `minecraft/klyde-bridge/`), admin command execution (ADMIN_IDS-gated), in-game invocation + "working on it" feedback. Chat bridge is intentionally OUT of scope — the server already uses the "Simple Discord Link" mod.
 
