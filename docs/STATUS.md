@@ -39,8 +39,10 @@ WebSocket — see Minecraft leg).
 - [x] `minecraft` tool reworked to route through the bridge — awareness actions (`2e0cdad`).
 - [x] `/mc` slash commands test rework through the bridge (`301a8f0`).
 - [x] Deployed (`8b5ca6f1`); `MC_BRIDGE_TOKEN` secret set; `/ai/mcprobe` returns configured=true/connected=false (waiting for the mod).
-- [x] Fabric mod scaffold (`4e44d80`): `minecraft/klyde-bridge/` — outbound WS client, hello auth, query handling (status/players/recent_chat/player_location), opt-out filtering, announce; build matrix 26.3/26.2 (loom 1.19-SNAPSHOT, loader 0.20.1). **Not yet built/run** — needs JDK 21 and the exact `yarn_mappings` value.
-- [ ] Live hookup: install JDK 21, fill `yarn_mappings`, build, deploy mod to server with config, confirm `/ai/mcprobe` flips connected=true.
+- [x] Fabric mod scaffold (`4e44d80`): `minecraft/klyde-bridge/` — outbound WS client, hello auth, query handling (status/players/recent_chat/player_location), opt-out filtering, announce; build matrix 26.3/26.2 (loom 1.19-SNAPSHOT, loader 0.20.1).
+- [x] **Mod builds verified (`7364352`)**: 26.3 (fabric-api 0.166.2+26.3) and 26.2 (0.161.0+26.2) with Gradle 9.8.0 + JDK 25. 26.x = unobfuscated era → no mappings, `net.fabricmc.fabric-loom` plugin, Java 25. Artifact: `klyde-bridge-0.1.0.jar`.
+- [x] `/mc` slash-command handler committed (`afcbda0`) — was riding uncommitted from the earlier slice.
+- [ ] Live hookup: deploy mod to server with config (`bridge.url`, `bridge.token`), confirm `/ai/mcprobe` flips connected=true.
 
 **Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS — scaffold in `minecraft/klyde-bridge/`), admin command execution (ADMIN_IDS-gated), in-game invocation + "working on it" feedback. Chat bridge is intentionally OUT of scope — the server already uses the "Simple Discord Link" mod.
 

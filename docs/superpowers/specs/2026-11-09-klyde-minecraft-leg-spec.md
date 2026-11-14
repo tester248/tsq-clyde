@@ -167,18 +167,21 @@ Fabric mod (klyde-bridge)          MinecraftBridgeDO (Worker)
 - Mod slice: Fabric mod implementation, deployment, reachability (outbound
   WS needs the host to allow outbound connections — generally allowed).
 
-### Mod slice build matrix (locked 2026-11-14)
+### Mod slice build matrix (locked 2026-11-14, verified 2026-11-14)
 
 Two supported game versions, one codebase (build per version by swapping
-`gradle.properties` values or `-P` flags):
+`gradle.properties` values):
 
 | Minecraft | Loader | Loom | Fabric API |
 |---|---|---|---|
 | **26.3** | 0.20.1 | 1.19-SNAPSHOT | `0.166.2+26.3` |
 | **26.2** | 0.20.1 | 1.19-SNAPSHOT | `0.161.0+26.2` |
 
-Toolchain: JDK 21+ required (Minecraft 26.x; the repo machine currently has
-JDK 17 — upgrade before building). Gradle wrapper 8.x (loom 1.19-SNAPSHOT).
+Toolchain: **JDK 25 + Gradle 9.8.0 (verified)**. Minecraft 26.x ships
+unobfuscated, so there is **no mappings dependency** (Yarn has no 26.x
+builds; official Mojang mappings are absent from the manifest). Use the
+fully-qualified loom plugin id `net.fabricmc.fabric-loom` and target Java 25.
+`gradle build` produces `klyde-bridge-0.1.0.jar` for both versions.
 
 ## 7. Definition of done
 
