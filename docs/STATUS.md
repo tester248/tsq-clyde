@@ -41,7 +41,7 @@ WebSocket — see Minecraft leg).
 - [x] Deployed (`8b5ca6f1`); `MC_BRIDGE_TOKEN` secret set; `/ai/mcprobe` returns configured=true/connected=false (waiting for the mod).
 - [ ] Live hookup: Fabric mod (future slice) — see spec §"Open items".
 
-**Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS), admin command execution (ADMIN_IDS-gated), chat bridge, in-game invocation + "working on it" feedback.
+**Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS — scaffold in `minecraft/klyde-bridge/`), admin command execution (ADMIN_IDS-gated), in-game invocation + "working on it" feedback. Chat bridge is intentionally OUT of scope — the server already uses the "Simple Discord Link" mod.
 
 ## How to verify / known gaps
 

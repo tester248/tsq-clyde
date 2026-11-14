@@ -159,10 +159,26 @@ Fabric mod (klyde-bridge)          MinecraftBridgeDO (Worker)
 ## 6. Open items (future slices)
 
 - Admin command execution (`command` action + `ADMIN_IDS` gate).
-- Chat bridge (Discord ⇄ in-game) via the reserved `event` frames.
 - In-game invocation (`@Klyde` in chat) and "working on it" in-game feedback.
+- ~~Chat bridge~~ — **not Klyde's scope**: the server already runs the
+  "Simple Discord Link" mod for Discord ⇄ in-game chat. Klyde therefore does
+  NOT implement chat bridging; the reserved `event` frame type is not needed
+  for chat.
 - Mod slice: Fabric mod implementation, deployment, reachability (outbound
   WS needs the host to allow outbound connections — generally allowed).
+
+### Mod slice build matrix (locked 2026-11-14)
+
+Two supported game versions, one codebase (build per version by swapping
+`gradle.properties` values or `-P` flags):
+
+| Minecraft | Loader | Loom | Fabric API |
+|---|---|---|---|
+| **26.3** | 0.20.1 | 1.19-SNAPSHOT | `0.166.2+26.3` |
+| **26.2** | 0.20.1 | 1.19-SNAPSHOT | `0.161.0+26.2` |
+
+Toolchain: JDK 21+ required (Minecraft 26.x; the repo machine currently has
+JDK 17 — upgrade before building). Gradle wrapper 8.x (loom 1.19-SNAPSHOT).
 
 ## 7. Definition of done
 

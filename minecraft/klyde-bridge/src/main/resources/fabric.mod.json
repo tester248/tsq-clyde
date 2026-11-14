@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "klyde-bridge",
+  "version": "${version}",
+  "name": "Klyde Bridge",
+  "description": "Thin outbound WebSocket bridge: connects Klyde's Cloudflare brain to this server. Answers targeted queries (status, players, recent chat, player locations) and respects per-player opt-out.",
+  "authors": [
+    "klyde"
+  ],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.klyde.bridge.KlydeBridgeMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.0",
+    "minecraft": "~${minecraft_version}",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
