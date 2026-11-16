@@ -1,17 +1,44 @@
 # Klyde Bridge (Fabric mod)
 
 Thin, passive server-side mod that gives Klyde (Cloudflare worker) live
-awareness of this server. It connects **outbound** over WebSocket to the
-worker's `POST /minecraft/bridge/connect` endpoint — no inbound ports, no
-port-forwarding.
+awareness of this server **and lets players invoke Klyde in-game**. It talks
+to the worker over **long-poll plain HTTPS** — no inbound ports, no
+port-forwarding, and it survives egress proxies that kill WebSocket upgrades.
 
 **Status: builds verified for both 26.3 and 26.2** (Gradle 9.8.0, JDK 25).
 Artifact: `klyde-bridge-0.1.0.jar` in `build/libs/`.
 
-## Protocol
+## Transport & protocol
 
-See `docs/superpowers/specs/2026-11-09-klyde-minecraft-leg-spec.md` §4.2.
-Frames: `hello` (auth) / `query` / `result` / `ping` / `pong`.
+- **Poll:** `GET /minecraft/bridge/poll` (Bearer token) — long-polls up to
+  15s; returns a frame: `{query:{...}}` (a tool query to answer),
+  `{message:{kind,text}}` (an outgoing Klyde chat message), or `{}`.
+- **Result:** `POST /minecraft/bridge/result` — answers a `query` frame.
+- **Invoke:** `POST /minecraft/bridge/invoke` — sends an in-game invocation
+  (`{player, text}`) to the worker when a player's chat contains "klyde".
+- **Roster:** `POST /minecraft/bridge/roster` — pushes the installed-mod list
+  at startup so Klyde can answer mod-aware questions.
+
+## In-game behavior (v0.9.0)
+
+- **Trigger:** any player chat message containing the word `klyde`
+  (case-insensitive, word boundary) becomes a query. The rest of the message
+  is the prompt. E.g. `klyde what is the tps`.
+- **Progress:** Klyde broadcasts short plain-text progress lines while
+  working (`Klyde is searching…`, reading, composing) — no emoji.
+- **Replies:** broadcast to the whole server, **dark blue** (configurable),
+  chunked into short sentences — not long paragraphs.
+- **Mod awareness:** the mod roster is pushed at startup; Klyde injects a
+  one-line summary per invocation and can enumerate full details via a tool.
+
+## Commands (`/klyde`, permissionless for everyone)
+
+| Command | Effect |
+|---|---|
+| `/klyde` | help |
+| `/klyde privacy <on|off>` | opt out/in of sharing location + chat data |
+| `/klyde progress <on|off>` | hide/show Klyde's progress messages (this player) |
+| `/klyde messages <on|off>` | hide/show all Klyde messages (this player) |
 
 ## Build matrix
 
@@ -19,7 +46,7 @@ One codebase, two supported game versions. `gradle.properties` defaults to
 26.3; edit the two lines (or use `-P` overrides) for 26.2:
 
 | Minecraft | Loader | Loom | Fabric API |
-|---|---|---|---|
+|---|---|---|
 | 26.3 | 0.20.1 | 1.19-SNAPSHOT | 0.166.2+26.3 |
 | 26.2 | 0.20.1 | 1.19-SNAPSHOT | 0.161.0+26.2 |
 
@@ -56,34 +83,51 @@ Output: `build/libs/klyde-bridge-0.1.0.jar` → drop into the server's
 > Suggested: name deployed jars by version (`klyde-bridge-0.1.0-mc26.3.jar`)
 > so the right one is obvious.
 
-## Configuration (`config/klyde-bridge.properties`)
+## Configuration (`config/klyde-bridge.json`)
 
-**Created automatically on first boot** (with placeholder values) at
-`config/klyde-bridge.properties` in the server's config directory. Edit it,
-then restart the server to apply.
+**Created automatically on first boot** in the server's config directory. If
+a legacy `config/klyde-bridge.properties` exists, it is migrated once (the old
+file is renamed to `.bak`). Edit and restart to apply.
 
-```properties
-# Required
-bridge.url=wss://tsq-klyde.deezgames.workers.dev/minecraft/bridge/connect
-bridge.token=REPLACE_WITH_SHARED_SECRET
-
-# Optional
-announce=false
-# optout.Alice=true
-# optout.Bob=true
+```json
+{
+  "bridgeUrl": "https://tsq-klyde.deezgames.workers.dev/minecraft/bridge",
+  "token": "REPLACE_WITH_SHARED_SECRET",
+  "announce": false,
+  "color": "dark_blue"
+}
 ```
 
-- `bridge.token` must match the worker's `MC_BRIDGE_TOKEN` secret.
-- `optout.<name>=true` excludes that player from `recent_chat` and
-  `player_location` (filtered before data leaves the server); they appear as
-  `[redacted]` in `players`.
-- `announce=true` broadcasts a message in-game when the bridge connects.
+- `bridgeUrl` is the worker bridge base (no trailing slash); the mod appends
+  `/poll`, `/result`, `/invoke`, `/roster`.
+- `token` must match the worker's `MC_BRIDGE_TOKEN` secret.
+- `color` — one of the standard Minecraft chat colors (`dark_blue` is the
+  default: `black`, `dark_blue`, `dark_green`, `dark_aqua`, `dark_red`,
+  `dark_purple`, `gold`, `gray`, `dark_gray`, `blue`, `green`, `aqua`,
+  `red`, `light_purple`, `yellow`, `white`).
+
+## Per-player preferences (`config/klyde-preferences.json`)
+
+Managed via `/klyde` in-game; share-by-default:
+
+```json
+{
+  "alice": { "privacy": false, "showProgress": true, "showMessages": true }
+}
+```
+
+- `privacy: true` — the player's location and chat are excluded from queries
+  (they appear as `[redacted]` in `/mc players`).
+- `showProgress: false` — hides Klyde's progress lines for that player.
+- `showMessages: false` — hides all Klyde messages for that player.
 
 ## Scope notes
 
 - **Not** a chat bridge: the server already runs "Simple Discord Link" for
-  Discord ⇄ in-game chat. Klyde only reads recent chat for awareness.
-- Read-only queries only. Admin command execution is a future slice.
+  Discord ⇄ in-game chat. Klyde only reads recent chat for awareness and
+  answers direct in-game invocations.
+- Read-only awareness + invocation only. Admin/console commands are left to
+  SDL's `#console` channel and the host dashboard.
 - Uses the 26.x unobfuscated toolchain: `net.fabricmc.fabric-loom` plugin,
   no mappings, Java 25/`options.release = 25`. Verified builds for 26.3 and
   26.2.

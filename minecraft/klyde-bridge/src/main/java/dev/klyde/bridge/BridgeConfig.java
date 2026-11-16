@@ -72,6 +72,10 @@ public final class BridgeConfig {
             config.announce = Boolean.parseBoolean(props.getProperty("announce", "false"));
             String opt = props.getProperty("color", "").trim();
             if (!opt.isEmpty()) config.color = opt;
+            // Normalize legacy endpoint (wss://.../connect) to a base URL.
+            config.bridgeUrl = config.bridgeUrl
+                .replaceFirst("^wss://", "https://")
+                .replaceFirst("/connect$", "");
             // Keep the legacy file but rename to .bak so this runs once.
             Files.move(propsPath, propsPath.resolveSibling("klyde-bridge.properties.bak"));
             Files.writeString(jsonPath, GSON.toJson(config));
