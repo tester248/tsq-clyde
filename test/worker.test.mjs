@@ -207,6 +207,30 @@ describe("worker wiring", () => {
     // makeEnv only for gateway — missing bridge DO => 503 proves routing hit.
     assert.ok(res.status === 503 || res.status === 200);
   });
+
+  it("minecraft bridge invoke requires the bearer token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/invoke", { method: "POST" }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it("minecraft bridge roster requires the bearer token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/roster", { method: "POST" }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
 });
 
 describe("slash command registration", () => {

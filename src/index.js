@@ -375,6 +375,28 @@ router.post("/minecraft/bridge/result", async (request, env) => {
   return stub.fetch(forwarded);
 });
 
+// In-game invocation: the mod POSTs {player, text} when a chat message
+// contains "klyde". The bridge DO runs the headless agent invocation and
+// enqueues progress/reply frames to the outbox.
+router.post("/minecraft/bridge/invoke", async (request, env) => {
+  if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
+  if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
+  const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
+  const forwarded = new Request("https://bridge/invoke", request);
+  return stub.fetch(forwarded);
+});
+
+// Mod roster push: the mod enumerates installed mods at startup and POSTs
+// them here so the brain can inject a compact summary and answer `mods`
+// tool queries.
+router.post("/minecraft/bridge/roster", async (request, env) => {
+  if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
+  if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
+  const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
+  const forwarded = new Request("https://bridge/roster", request);
+  return stub.fetch(forwarded);
+});
+
 // Plain-HTTPS reachability probe: hosts whose egress proxies interfere with
 // WebSocket upgrades (the mod's hello never arrives) may still allow normal
 // HTTPS. The mod hits this on startup to tell us which path survives.

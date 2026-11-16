@@ -200,4 +200,96 @@ describe("MinecraftBridgeDO", () => {
     assert.equal(status.pollConnected, true);
     assert.equal(status.queueLength, 0);
   });
+
+  it("invoke routes through the configured processor into the outbox", async () => {
+    const { bridge, timers } = makeBridge({
+      runInvocation: async ({ player, text }, push) => {
+        assert.equal(player, "Alice");
+        assert.equal(text, "klyde hi");
+        push({ kind: "phase", text: "Klyde is searching…" });
+        push({ kind: "reply", text: "hello Alice" });
+      },
+    });
+    const res = await bridge.fetch(new Request("https://bridge/invoke", {
+      method: "POST",
+      body: JSON.stringify({ player: "Alice", text: "klyde hi" }),
+    }));
+    assert.equal(res.status, 202);
+
+    const poll1 = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+    assert.ok(poll1.message, "expected a message frame from the outbox");
+    assert.equal(poll1.message.kind, "phase");
+    const poll2 = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+    assert.equal(poll2.message.kind, "reply");
+
+    const poll3Promise = bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
+    timers.schedules[timers.schedules.length - 1].fn();
+    assert.deepEqual(await (await poll3Promise).json(), {});
+  });
+
+  it("invoke without a processor still accepts and returns 202", async () => {
+    const { bridge } = makeBridge();
+    const res = await bridge.fetch(new Request("https://bridge/invoke", {
+      method: "POST",
+      body: JSON.stringify({ player: "Bob", text: "klyde yo" }),
+    }));
+    assert.equal(res.status, 202);
+  });
+
+  it("rosters are stored, returned, and counted in status", async () => {
+    const { bridge } = makeBridge();
+    const mods = [
+      { id: "aether", name: "The Aether", version: "1.0" },
+      { id: "mythicmetals", name: "Mythic Metals", version: "2.0" },
+    ];
+    const put = await bridge.fetch(new Request("https://bridge/roster", {
+      method: "POST",
+      body: JSON.stringify({ mods }),
+    }));
+    assert.equal(put.status, 200);
+
+    const got = await (await bridge.fetch(new Request("https://bridge/rosterGet"))).json();
+    assert.deepEqual(got.mods, mods);
+
+    const status = await (await bridge.fetch(new Request("https://bridge/status"))).json();
+    assert.equal(status.rosterCount, 2);
+  });
+
+  it("poll returns queued queries before outbox messages", async () => {
+    const { bridge, timers } = makeBridge({
+      runInvocation: async (_inv, push) => push({ kind: "reply", text: "later" }),
+    });
+    const queryPromise = bridge.query({ action: "status" });
+    await bridge.fetch(new Request("https://bridge/invoke", {
+      method: "POST",
+      body: JSON.stringify({ player: "A", text: "klyde hi" }),
+    }));
+
+    const poll1 = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+    assert.ok(poll1.query, "query should come first");
+    assert.equal(poll1.query.action, "status");
+
+    const poll2 = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+    assert.ok(poll2.message, "then the outbox message");
+    assert.equal(poll2.message.kind, "reply");
+
+    // resolve the query so its promise settles
+    await bridge.fetch(new Request("https://bridge/result", {
+      method: "POST",
+      body: JSON.stringify({ id: poll1.query.id, ok: true, data: { version: "26.3" } }),
+    }));
+    assert.equal((await queryPromise).ok, true);
+  });
+
+  it("status reports outbox length", async () => {
+    const { bridge } = makeBridge({
+      runInvocation: async (_inv, push) => push({ kind: "reply", text: "x" }),
+    });
+    await bridge.fetch(new Request("https://bridge/invoke", {
+      method: "POST",
+      body: JSON.stringify({ player: "A", text: "klyde hi" }),
+    }));
+    const status = await (await bridge.fetch(new Request("https://bridge/status"))).json();
+    assert.equal(status.outboxLength, 1);
+  });
 });
