@@ -209,3 +209,7 @@ so this path never runs — it stays as a zero-cost manual fallback.
   session holder + `POST /minecraft/bridge/connect`; `minecraft` awareness
   tool (`status`/`players`/`recent_chat`/`player_location`) via the bridge;
   read-only `/mc status|players`; `/ai/mcprobe`. Fabric mod pending.
+- `v0.8.1` — Minecraft leg live: long-poll transport over plain HTTPS (host
+  egress proxy terminates WS upgrades) — `/poll` + `/result` routes, mod
+  poll client, `pollConnected` probe. Mod built for 26.3/26.2 (JDK 25,
+  Gradle 9.8). Live-verified: `/mc status` returns real server data.
