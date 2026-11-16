@@ -6,7 +6,10 @@ import com.google.gson.JsonParser;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
+import java.time.Duration;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -39,7 +42,43 @@ public final class BridgeClient {
 
     public void start() {
         running.set(true);
+        connectivityCheck();
         connect();
+    }
+
+    // Probe whether plain HTTPS outbound survives the host's egress proxy
+    // (WebSocket upgrades may be intercepted/terminated while normal HTTPS
+    // still works). Diagnostic only — the WS remains the primary transport.
+    private void connectivityCheck() {
+        String bridgeUrl = mod.getConfig().bridgeUrl();
+        if (!mod.getConfig().isUsable()) return;
+        String pingUrl;
+        try {
+            pingUrl = bridgeUrl
+                .replaceFirst("^wss://", "https://")
+                .replaceFirst("/connect$", "/ping");
+        } catch (Exception e) {
+            return;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(pingUrl))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                KlydeBridgeMod.LOGGER.info(
+                    "Klyde connectivity check: plain HTTPS OK ({} -> {})",
+                    resp.statusCode(), pingUrl);
+            } else {
+                KlydeBridgeMod.LOGGER.warn(
+                    "Klyde connectivity check: plain HTTPS returned {} ({})",
+                    resp.statusCode(), pingUrl);
+            }
+        } catch (Exception e) {
+            KlydeBridgeMod.LOGGER.warn(
+                "Klyde connectivity check failed (outbound blocked?): {}", e.toString());
+        }
     }
 
     public void stop() {

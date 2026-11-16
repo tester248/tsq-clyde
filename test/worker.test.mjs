@@ -154,6 +154,19 @@ describe("worker wiring", () => {
     );
     assert.equal(res.status, 503);
   });
+
+  it("minecraft bridge ping answers ok (plain HTTPS reachability probe)", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/ping"),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+  });
 });
 
 describe("slash command registration", () => {

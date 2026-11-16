@@ -345,6 +345,12 @@ async function handleMinecraftBridgeConnect(request, env) {
 router.get("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
 router.post("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
 
+// Plain-HTTPS reachability probe: hosts whose egress proxies interfere with
+// WebSocket upgrades (the mod's hello never arrives) may still allow normal
+// HTTPS. The mod hits this on startup to tell us which path survives.
+// Unauthenticated by design — returns nothing sensitive.
+router.get("/minecraft/bridge/ping", () => Response.json({ ok: true }));
+
 export default {
   async fetch(request, env, ctx) {
     // Wake-on-fetch: any HTTP hit re-arms the gateway watchdog and heals a
