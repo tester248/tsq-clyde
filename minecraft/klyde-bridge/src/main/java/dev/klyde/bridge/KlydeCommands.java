@@ -39,12 +39,37 @@ public final class KlydeCommands {
                     KlydeBridgeMod.get().getPreferences().setShowProgress(sourcePlayerName(ctx), on)))
                 .then(toggle("messages", (ctx, on) ->
                     KlydeBridgeMod.get().getPreferences().setShowMessages(sourcePlayerName(ctx), on)))
+                .then(Commands.literal("clear").executes(KlydeCommands::clear))
                 .executes(ctx -> {
                     ctx.getSource().sendSuccess(() -> Component.literal(
-                        "Klyde: /klyde privacy <on|off> · progress <on|off> · messages <on|off>"), false);
+                        "Klyde: /klyde privacy <on|off> · progress <on|off> · messages <on|off> · clear (ops)"), false);
                     return 1;
                 })
         );
+    }
+
+    // Ops (vanilla permission level 2+) wipe the in-game conversation.
+    private static int clear(CommandContext<CommandSourceStack> ctx) {
+        String player = sourcePlayerName(ctx);
+        if (player == null) {
+            ctx.getSource().sendFailure(Component.literal("You must be in-game to clear Klyde's context."));
+            return 0;
+        }
+        ServerPlayer p;
+        try {
+            p = ctx.getSource().getPlayerOrException();
+        } catch (Exception e) {
+            return 0;
+        }
+        if (!p.permissions().hasPermission(
+                new net.minecraft.server.permissions.Permission.HasCommandLevel(
+                    net.minecraft.server.permissions.PermissionLevel.ADMINS))) {
+            ctx.getSource().sendFailure(Component.literal("Only ops can clear Klyde's context."));
+            return 0;
+        }
+        KlydeBridgeMod.get().getClient().clearContext();
+        ctx.getSource().sendSuccess(() -> Component.literal("Klyde: context cleared"), false);
+        return 1;
     }
 
     private static LiteralArgumentBuilder<CommandSourceStack> toggle(String name, ToggleAction action) {

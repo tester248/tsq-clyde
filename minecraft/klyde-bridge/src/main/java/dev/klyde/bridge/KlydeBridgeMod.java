@@ -45,6 +45,10 @@ public final class KlydeBridgeMod implements ModInitializer {
         return preferences;
     }
 
+    public BridgeClient getClient() {
+        return client;
+    }
+
     public long serverStartNanos() {
         return serverStartNanos;
     }

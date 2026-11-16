@@ -231,6 +231,39 @@ describe("worker wiring", () => {
     );
     assert.equal(res.status, 401);
   });
+
+  it("minecraft bridge clear requires the bearer token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/clear", { method: "POST" }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it("minecraft bridge clear wipes the minecraft conversation", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    let clearedKey = null;
+    env.CONVERSATION_DO = {
+      idFromName: (n) => { clearedKey = n; return "minecraft"; },
+      get: () => ({ fetch: async () => new Response("cleared") }),
+    };
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/clear", {
+        method: "POST",
+        headers: { authorization: "Bearer secret" },
+      }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 200);
+    assert.equal(clearedKey, "minecraft");
+  });
 });
 
 describe("slash command registration", () => {

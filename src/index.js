@@ -397,6 +397,17 @@ router.post("/minecraft/bridge/roster", async (request, env) => {
   return stub.fetch(forwarded);
 });
 
+// Clear the in-game conversation (the per-server ConversationDO keyed
+// "minecraft"). Called by the mod when an op runs /klyde clear; the mod is
+// the gatekeeper for op-status, the worker just performs the clear.
+router.post("/minecraft/bridge/clear", async (request, env) => {
+  if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
+  if (!env.CONVERSATION_DO) return new Response("conversation not configured", { status: 503 });
+  const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName("minecraft"));
+  await stub.fetch("https://example.com/clear");
+  return new Response("ok");
+});
+
 // Plain-HTTPS reachability probe: hosts whose egress proxies interfere with
 // WebSocket upgrades (the mod's hello never arrives) may still allow normal
 // HTTPS. The mod hits this on startup to tell us which path survives.

@@ -218,6 +218,26 @@ public final class BridgeClient {
         });
     }
 
+    // Ask the worker to wipe the in-game conversation (called by ops via
+    // /klyde clear). Best-effort.
+    public void clearContext() {
+        String clearUrl = deriveUrl("/clear");
+        if (clearUrl == null) return;
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(clearUrl))
+                .timeout(Duration.ofSeconds(10))
+                .header("Authorization", "Bearer " + mod.getConfig().token())
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                KlydeBridgeMod.LOGGER.warn("Klyde clear returned {}", resp.statusCode());
+            }
+        } catch (Exception e) {
+            KlydeBridgeMod.LOGGER.warn("Klyde clear failed: {}", e.toString());
+        }
+    }
+
     // Send an in-game invocation (chat message containing "klyde") to the
     // worker. Best-effort: failures are logged, never break chat.
     public void invoke(String player, String text) {
