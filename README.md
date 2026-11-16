@@ -213,3 +213,9 @@ so this path never runs — it stays as a zero-cost manual fallback.
   egress proxy terminates WS upgrades) — `/poll` + `/result` routes, mod
   poll client, `pollConnected` probe. Mod built for 26.3/26.2 (JDK 25,
   Gradle 9.8). Live-verified: `/mc status` returns real server data.
+- `v0.9.0` — in-game invocation: `klyde` anywhere in chat triggers a query
+  (`/invoke` + outbox + `/roster`), headless brain (`processMinecraftInvocation`)
+  reusing the Discord pipeline, game-chat formatting (`formatGameChat`),
+  mod-roster awareness (prompt line + `mods` tool), `/klyde` privacy/progress/
+  messages commands (permissionless), JSON config + per-player prefs, colored
+  broadcast. Worker deployed; mod jar built for 26.3.

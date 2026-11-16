@@ -42,8 +42,9 @@ WebSocket — see Minecraft leg).
 - [x] Fabric mod scaffold (`4e44d80`): `minecraft/klyde-bridge/` — outbound WS client, hello auth, query handling (status/players/recent_chat/player_location), opt-out filtering, announce; build matrix 26.3/26.2 (loom 1.19-SNAPSHOT, loader 0.20.1).
 - [x] **Mod builds verified (`7364352`)**: 26.3 (fabric-api 0.166.2+26.3) and 26.2 (0.161.0+26.2) with Gradle 9.8.0 + JDK 25. 26.x = unobfuscated era → no mappings, `net.fabricmc.fabric-loom` plugin, Java 25. Artifact: `klyde-bridge-0.1.0.jar`.
 - [x] `/mc` slash-command handler committed (`afcbda0`) — was riding uncommitted from the earlier slice.
-- [ ] Live hookup: deploy mod to server with config (`bridge.url`, `bridge.token`), confirm `/ai/mcprobe` flips connected=true.
 - [x] **Live hookup DONE (2026-11-16)**: host proxy kills WebSocket upgrades → switched to **long-poll transport** over plain HTTPS (`5cc33a1`). Mod connects via poll loop; `/ai/mcprobe` shows `pollConnected:true`; `/mc status` returns live data (`🟢 26.3 — TPS 20 …`). `/mc` slash commands registered globally (POST /discord/register-commands).
+- [x] **In-game invocation slice (`v0.9.0`) built**: reverse channel (invoke/roster/outbox) + headless brain (`processMinecraftInvocation`) + mod side (JSON config, per-player prefs, `/klyde` command tree, trigger detection, colored broadcast). Worker deployed `55d20e33`; live smoke verified 202 + phase/reply frames through the real agent loop. Mod jar built for 26.3 — deploy to server to enable.
+- [ ] In-game live verification (after deploying the new jar): trigger, progress, reply format/color, roster-aware answers, `/klyde` commands + privacy/visibility effects.
 
 **Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS — scaffold in `minecraft/klyde-bridge/`), admin command execution (ADMIN_IDS-gated), in-game invocation + "working on it" feedback. Chat bridge is intentionally OUT of scope — the server already uses the "Simple Discord Link" mod.
 
