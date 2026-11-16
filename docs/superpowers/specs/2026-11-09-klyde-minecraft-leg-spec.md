@@ -158,12 +158,15 @@ Fabric mod (klyde-bridge)          MinecraftBridgeDO (Worker)
 
 ## 6. Open items (future slices)
 
-- Admin command execution (`command` action + `ADMIN_IDS` gate).
+- ~~Admin command execution~~ — **not needed**: Simple Discord Link already relays
+  chat and exposes a separate `#console` channel that can watch the server
+  console and issue commands; the host dashboard is another path. Klyde's
+  `minecraft` tool therefore stays read-only (awareness) — no `command`
+  action, no ADMIN_IDS gate needed on the tool.
 - In-game invocation (`@Klyde` in chat) and "working on it" in-game feedback.
-- ~~Chat bridge~~ — **not Klyde's scope**: the server already runs the
-  "Simple Discord Link" mod for Discord ⇄ in-game chat. Klyde therefore does
-  NOT implement chat bridging; the reserved `event` frame type is not needed
-  for chat.
+- ~~Chat bridge~~ — **not Klyde's scope**: Simple Discord Link covers Discord
+  ⇄ in-game chat (confirmed live). The reserved `event` frame type is not
+  needed for chat.
 - Mod slice: Fabric mod implementation, deployment, reachability (outbound
   WS needs the host to allow outbound connections — generally allowed).
 
