@@ -4,6 +4,8 @@
 // and routes targeted query/response frames between the agent tools and the
 // mod. Mirrors GatewayDO's connection-ownership pattern.
 
+import { processMinecraftInvocation } from "./processor.js";
+
 const HEARTBEAT_MS = 30_000;
 const QUERY_TIMEOUT_MS = 10_000;
 const BAD_TOKEN_CLOSE = 4001;
@@ -18,6 +20,12 @@ export class MinecraftBridgeDO {
       schedule: (fn) => setTimeout(fn, QUERY_TIMEOUT_MS),
       ...deps,
     };
+    // In-game invocation runs the same brain as Discord. Tests inject a fake
+    // via deps.runInvocation.
+    this.runInvocation =
+      deps.runInvocation ||
+      (({ player, text }, push) =>
+        processMinecraftInvocation({ player, text, deliver: push, env: this.env }));
     this.socket = null;
     this.connected = false;
     this.seq = 0;
@@ -67,10 +75,10 @@ export class MinecraftBridgeDO {
       case "/invoke": {
         const body = await request.json();
         const invocation = { player: String(body.player || ""), text: String(body.text || "") };
-        if (this.deps.runInvocation) {
-          this.deps.runInvocation(invocation, (frame) => this.pushOutbox(frame)).catch((err) => {
+        if (invocation.text) {
+          this.runInvocation(invocation, (frame) => this.pushOutbox(frame)).catch((err) => {
             console.error("invocation failed", err);
-            this.pushOutbox({ type: "message", kind: "reply", text: "Klyde hit an error. Try again." });
+            this.pushOutbox({ kind: "reply", text: "Klyde hit an error. Try again." });
           });
         }
         return new Response("accepted", { status: 202 });

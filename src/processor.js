@@ -248,3 +248,182 @@ export async function processMessage(context, env) {
 
   return { reply: aiRes.text, provider: aiRes.provider, delivered };
 }
+
+// ---- Minecraft in-game invocation (v0.9.0) ----
+
+// Progress phases for in-game chat (no emoji — they don't render in-game).
+const MC_PHASE_MESSAGES = {
+  search: "Klyde is searching…",
+  fetch: "Klyde is reading sources…",
+  compose: "Klyde is composing…",
+};
+
+// Format an LLM answer for game chat: strip markdown/structured artifacts,
+// then split into short chunks at sentence boundaries. Minecraft chat is
+// read as short lines, not paragraphs.
+export function formatGameChat(text, { maxChars = 200, maxMessages = 5 } = {}) {
+  const cleaned = String(text || "")
+    .split("\n")
+    .map((line) => line.replace(/^(\s*)(#+\s*|\*\s*|-\s*|>\s*)/, "$1").trim())
+    .filter(Boolean)
+    .join(" ");
+  if (!cleaned) return [];
+
+  const chunks = [];
+  let current = "";
+  const flush = () => {
+    if (current.trim()) chunks.push(current.trim());
+    current = "";
+  };
+  for (const sentence of cleaned.split(/(?<=[.!?])\s+/)) {
+    let rest = sentence;
+    while (rest.length > maxChars) {
+      if (current) flush();
+      current = rest.slice(0, maxChars);
+      flush();
+      rest = rest.slice(maxChars);
+    }
+    if (current && current.length + rest.length + 1 > maxChars) flush();
+    current = current ? `${current} ${rest}` : rest;
+  }
+  flush();
+  return chunks.slice(0, maxMessages);
+}
+
+async function getRosterLine(env) {
+  try {
+    const binding = env.MINECRAFT_BRIDGE_DO;
+    if (!binding) return null;
+    const stub = binding.get(binding.idFromName("minecraft"));
+    const res = await stub.fetch("https://bridge/rosterGet");
+    if (!res.ok) return null;
+    const body = await res.json();
+    const mods = Array.isArray(body.mods) ? body.mods : [];
+    if (mods.length === 0) return null;
+    const names = mods
+      .slice(0, 30)
+      .map((m) => m.name || m.id)
+      .filter(Boolean)
+      .join(", ");
+    return `Server mods (${mods.length}): ${names}`;
+  } catch {
+    return null;
+  }
+}
+
+// Headless invocation for in-game queries. Reuses the same brain as Discord:
+// per-server ConversationDO (memory/profile/history), the agent loop, the
+// provider chain, and sentinel handling. Output is delivered via `deliver`
+// callback frames — {kind:"phase"} or {kind:"reply"} — which the bridge DO
+// queues to the mod's poller.
+export async function processMinecraftInvocation({
+  player,
+  text,
+  deliver,
+  env,
+  runAgentLoop: loop = runAgentLoop,
+}) {
+  const key = "minecraft"; // one conversation per server
+  const id = env.CONVERSATION_DO.idFromName(key);
+  const stub = env.CONVERSATION_DO.get(id);
+  await stub.fetch("https://example.com/initialize");
+
+  const userEntry = {
+    role: "user",
+    content: text,
+    timestamp: Date.now(),
+    author: { id: player, name: player },
+  };
+  await stub.fetch("https://example.com/append", {
+    method: "POST",
+    body: JSON.stringify(userEntry),
+  });
+
+  const stateResp = await stub.fetch("https://example.com/get");
+  const state = await stateResp.json();
+
+  if (state.tokenCount > MAX_HISTORY_TOKENS) {
+    const histMessages = state.history.map((h) => ({ role: h.role, content: h.content }));
+    const summaryRes = await summarizeConversation(histMessages, env);
+    await stub.fetch("https://example.com/setSummary", {
+      method: "POST",
+      body: JSON.stringify({ summary: summaryRes.text }),
+    });
+    await stub.fetch("https://example.com/recordUsage", {
+      method: "POST",
+      body: JSON.stringify({ model: summaryRes.provider, tokens: summaryRes.tokens }),
+    });
+  }
+
+  const updatedResp = await stub.fetch("https://example.com/get");
+  const updatedState = await updatedResp.json();
+
+  const messages = [];
+  if (updatedState.summary) {
+    messages.push({ role: "system", content: `Summary of previous conversation: ${updatedState.summary}` });
+  }
+  if (updatedState.memory) {
+    messages.push({
+      role: "system",
+      content: `MEMORY (channel notes) [${updatedState.memory.length}/${MEMORY_CHANNEL_LIMIT} chars]\n${updatedState.memory}`,
+    });
+  }
+  const profile = updatedState.userProfiles?.[player];
+  if (profile) {
+    messages.push({
+      role: "system",
+      content: `USER PROFILE [${profile.length}/${MEMORY_USER_LIMIT} chars]\n${profile}`,
+    });
+  }
+  const rosterLine = await getRosterLine(env);
+  if (rosterLine) {
+    messages.push({ role: "system", content: rosterLine });
+  }
+  updatedState.history.forEach((h) =>
+    messages.push({ role: h.role, content: h.author ? `[${h.author.name || h.author.id}] ${h.content}` : h.content })
+  );
+  messages.push({ role: "user", content: `[${player}] ${text}` });
+
+  const toolEnv = Object.assign(Object.create(env), {
+    CONVERSATION_STUB: stub,
+    CONVERSATION_KEY: key,
+    CURRENT_USER_ID: player,
+  });
+
+  let aiRes;
+  if (!shouldUseAgentTools(text)) {
+    aiRes = await generateReply(messages, env);
+    aiRes = { ...aiRes, totalTokens: aiRes.tokens };
+  } else {
+    aiRes = await loop({
+      messages,
+      env: toolEnv,
+      onPhase: (phase) => {
+        const msg = MC_PHASE_MESSAGES[phase];
+        if (msg) deliver({ kind: "phase", text: msg });
+      },
+    });
+  }
+
+  if (typeof aiRes.text === "string" && aiRes.text.includes(REFUSAL_SENTINEL)) {
+    aiRes = { ...aiRes, text: FRIENDLY_REFUSAL };
+  }
+
+  await stub.fetch("https://example.com/append", {
+    method: "POST",
+    body: JSON.stringify({
+      role: "assistant",
+      content: aiRes.text,
+      timestamp: Date.now(),
+    }),
+  });
+  await stub.fetch("https://example.com/recordUsage", {
+    method: "POST",
+    body: JSON.stringify({ model: aiRes.provider, tokens: aiRes.totalTokens }),
+  });
+
+  for (const chunk of formatGameChat(aiRes.text)) {
+    deliver({ kind: "reply", text: chunk });
+  }
+  return { provider: aiRes.provider, chunks: formatGameChat(aiRes.text).length };
+}

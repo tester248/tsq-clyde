@@ -2,6 +2,7 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { MinecraftBridgeDO } from "../src/minecraft_bridge_do.js";
+import { ConversationDO } from "../src/conversation_do.js";
 
 function makeFakeState() {
   const store = new Map();
@@ -291,5 +292,51 @@ describe("MinecraftBridgeDO", () => {
     }));
     const status = await (await bridge.fetch(new Request("https://bridge/status"))).json();
     assert.equal(status.outboxLength, 1);
+  });
+
+  it("invoke without a custom processor runs the real headless invocation", async () => {
+    // Real processor path: needs a conversation DO + provider fetch mocks.
+    const realFetch = globalThis.fetch;
+    const mem = new Map();
+    const convo = new ConversationDO(
+      { storage: { get: async (k) => mem.get(k) ?? null, put: async (k, v) => void mem.set(k, v) } },
+      {}
+    );
+    const store = new Map();
+    const bridge = new MinecraftBridgeDO(
+      { storage: { get: async (k) => store.get(k) ?? null, put: async (k, v) => void store.set(k, v) } },
+      {
+        CONVERSATION_DO: {
+          idFromName: () => "minecraft",
+          get: () => ({ fetch: (url, init) => convo.fetch(new Request(url, init)) }),
+        },
+        MINECRAFT_BRIDGE_DO: { idFromName: () => "minecraft", get: () => ({ fetch: async () => Response.json({ mods: [] }) }) },
+        INCEPTION_API_KEY: "k",
+        GROQ_API_KEY: "g",
+        WUS_API_KEY: "w",
+      },
+      {}
+    );
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("api.inceptionlabs.ai")) {
+        return Response.json({
+          choices: [{ message: { role: "assistant", content: "yes" } }],
+          usage: { total_tokens: 2 },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    try {
+      await bridge.fetch(new Request("https://bridge/invoke", {
+        method: "POST",
+        body: JSON.stringify({ player: "Alice", text: "hello" }),
+      }));
+      const poll = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+      assert.ok(poll.message, "expected a reply frame from the real invocation");
+      assert.equal(poll.message.kind, "reply");
+      assert.equal(poll.message.text, "yes");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
