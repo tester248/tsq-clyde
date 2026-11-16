@@ -197,7 +197,11 @@ public final class BridgeClient {
         });
     }
 
-    // Broadcast an outgoing Klyde chat frame to eligible players.
+    // Broadcast an outgoing Klyde chat frame to eligible players via tellraw.
+    // tellraw preserves our component color and is also picked up by Simple
+    // Discord Link (relayTellRaw), so Klyde's in-game messages appear in the
+    // linked Discord channel too. Per-player prefs are honored by excluding
+    // opted-out/quiet players from the target selector.
     private void handleMessageFrame(JsonObject message) {
         String kind = message.has("kind") ? message.get("kind").getAsString() : "reply";
         String text = message.has("text") ? message.get("text").getAsString() : "";
@@ -206,15 +210,28 @@ public final class BridgeClient {
         var server = mod.getServer();
         if (server == null) return;
         server.execute(() -> {
-            net.minecraft.network.chat.Component component =
-                net.minecraft.network.chat.Component.literal(text).withStyle(mod.getConfig().chatColor());
             boolean isProgress = "phase".equals(kind);
+            StringBuilder selector = new StringBuilder("@a");
+            boolean first = true;
             for (net.minecraft.server.level.ServerPlayer p : server.getPlayerList().getPlayers()) {
                 String name = p.getName().getString();
-                if (!mod.getPreferences().getShowMessages(name)) continue;
-                if (isProgress && !mod.getPreferences().getShowProgress(name)) continue;
-                p.sendSystemMessage(component);
+                if (!mod.getPreferences().getShowMessages(name)) {
+                    selector.append(first ? "[" : ",").append("name=!").append(name);
+                    first = false;
+                } else if (isProgress && !mod.getPreferences().getShowProgress(name)) {
+                    selector.append(first ? "[" : ",").append("name=!").append(name);
+                    first = false;
+                }
             }
+            if (!first) selector.append("]");
+
+            JsonObject component = new JsonObject();
+            component.addProperty("text", text);
+            component.addProperty("color", mod.getConfig().colorName());
+            String command = "tellraw " + selector + " " + component.toString();
+            KlydeBridgeMod.LOGGER.info("Klyde broadcast: {}", command);
+            server.getCommands().performPrefixedCommand(
+                server.createCommandSourceStack(), command);
         });
     }
 
@@ -267,9 +284,14 @@ public final class BridgeClient {
         if (mod.getConfig().announce()) {
             var server = mod.getServer();
             if (server != null) {
-                server.execute(() -> server.getPlayerList().broadcastSystemMessage(
-                    net.minecraft.network.chat.Component.literal("[Klyde] bridge connected"),
-                    false));
+                server.execute(() -> {
+                    JsonObject component = new JsonObject();
+                    component.addProperty("text", "[Klyde] bridge connected");
+                    component.addProperty("color", mod.getConfig().colorName());
+                    server.getCommands().performPrefixedCommand(
+                        server.createCommandSourceStack(),
+                        "tellraw @a " + component);
+                });
             }
         }
     }
