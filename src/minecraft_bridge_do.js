@@ -22,6 +22,9 @@ export class MinecraftBridgeDO {
     this.connected = false;
     this.seq = 0;
     this.pending = new Map(); // query id -> { resolve, timer }
+    this.queryQueue = [];     // frames awaiting pickup by the mod's poller
+    this.waiters = [];        // poll requests waiting for a queued query
+    this.lastPollAt = null;
     this.heartbeatTimer = null;
     this.status = { state: "idle", updatedAt: Date.now() };
     // diagnostics for /status + /ai/mcprobe (never exposes secrets)
@@ -36,8 +39,22 @@ export class MinecraftBridgeDO {
           ...this.status,
           connected: this.connected && !!this.socket,
           socket: !!this.socket,
+          pollConnected: this.lastPollAt !== null && Date.now() - this.lastPollAt < 60_000,
+          lastPollAt: this.lastPollAt,
+          queueLength: this.queryQueue.length,
           debug: this.debug,
         });
+      case "/poll": {
+        const timeout = Math.min(15_000, Math.max(1_000, parseInt(url.searchParams.get("timeout") ?? "10000", 10) || 10_000));
+        const frame = await this.pollWait(timeout);
+        if (!frame) return Response.json({});
+        return Response.json({ query: frame });
+      }
+      case "/result": {
+        const body = await request.json();
+        this.resolveResult(body);
+        return new Response("ok");
+      }
       case "/query": {
         const body = await request.json();
         return Response.json(await this.query(body));
@@ -137,21 +154,73 @@ export class MinecraftBridgeDO {
   }
 
   // Send a targeted query over the socket, awaiting the matching result.
+  // If the WS is not available, the query is queued for the mod's poller
+  // and resolved when the mod POSTs its result.
   query({ action, player }) {
-    if (!this.socket || !this.connected) {
-      return Promise.resolve({ ok: false, error: "bridge disconnected" });
-    }
     const id = ++this.seq;
     const frame = { type: "query", id, action };
     if (player) frame.player = player;
 
+    if (this.socket && this.connected) {
+      return new Promise((resolve) => {
+        const timer = this.deps.schedule(() => {
+          this.pending.delete(id);
+          resolve({ ok: false, error: "query timeout" });
+        });
+        this.pending.set(id, { resolve, timer });
+        this.#send(frame);
+      });
+    }
+
+    // No live socket: go through the long-poll queue.
     return new Promise((resolve) => {
       const timer = this.deps.schedule(() => {
         this.pending.delete(id);
+        const idx = this.queryQueue.findIndex((q) => q.id === id);
+        if (idx >= 0) this.queryQueue.splice(idx, 1);
         resolve({ ok: false, error: "query timeout" });
       });
       this.pending.set(id, { resolve, timer });
-      this.#send(frame);
+      this.queryQueue.push(frame);
+      // Wake the earliest waiter, if any, with this frame.
+      const waiter = this.waiters.shift();
+      if (waiter) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(frame);
+      }
     });
+  }
+
+  // Wait up to `timeout` ms for a queued query (long-poll). Returns the frame
+  // or null on timeout.
+  async pollWait(timeout) {
+    this.lastPollAt = Date.now();
+    if (this.queryQueue.length > 0) {
+      return this.queryQueue.shift();
+    }
+    return new Promise((resolve) => {
+      const timer = this.deps.schedule(() => {
+        const idx = this.waiters.findIndex((w) => w.timer === timer);
+        if (idx >= 0) this.waiters.splice(idx, 1);
+        resolve(null);
+      });
+      this.waiters.push({ resolve, timer });
+    });
+  }
+
+  // Resolve a pending query from the mod's POSTed result.
+  resolveResult(body) {
+    const id = body?.id;
+    if (typeof id !== "number") return;
+    // If the frame is still queued (never picked up), remove it.
+    const qIdx = this.queryQueue.findIndex((q) => q.id === id);
+    if (qIdx >= 0) this.queryQueue.splice(qIdx, 1);
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    pending.resolve(
+      body.ok ? { ok: true, data: body.data } : { ok: false, error: body.error || "mod error" }
+    );
   }
 }

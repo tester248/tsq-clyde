@@ -257,11 +257,14 @@ router.get("/ai/searchstatus", async (request, env) => {
 });
 
 // Minecraft bridge probe: reports whether the bridge DO binding is configured
-// and whether a mod is currently connected, plus last-frame diagnostics.
+// and whether a mod is currently connected (WS or poll), plus diagnostics.
 // Boolean + frame-type only — never exposes server data or secrets.
 router.get("/ai/mcprobe", async (request, env) => {
   const configured = !!env.MINECRAFT_BRIDGE_DO && !!env.MC_BRIDGE_TOKEN;
   let connected = false;
+  let pollConnected = false;
+  let lastPollAt = null;
+  let queueLength = 0;
   let debug = null;
   if (configured) {
     try {
@@ -271,12 +274,15 @@ router.get("/ai/mcprobe", async (request, env) => {
       const res = await stub.fetch("https://bridge/status");
       const body = await res.json();
       connected = body.connected === true;
+      pollConnected = body.pollConnected === true;
+      lastPollAt = body.lastPollAt ?? null;
+      queueLength = body.queueLength ?? 0;
       debug = body.debug || null;
     } catch {
       // treat as disconnected
     }
   }
-  return Response.json({ configured, connected, debug });
+  return Response.json({ configured, connected, pollConnected, lastPollAt, queueLength, debug });
 });
 
 // Skills probe: read-only verification that the SKILLS_KV binding is wired
@@ -344,6 +350,30 @@ async function handleMinecraftBridgeConnect(request, env) {
 
 router.get("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
 router.post("/minecraft/bridge/connect", handleMinecraftBridgeConnect);
+
+// Long-poll transport (plain HTTPS) — the transport that survives egress
+// proxies which swallow WebSocket upgrades. The mod polls for queued query
+// frames and POSTs results back. Both routes are Bearer-gated.
+function bridgeAuth(request, env) {
+  const auth = request.headers.get("authorization") || "";
+  return auth === `Bearer ${env.MC_BRIDGE_TOKEN}`;
+}
+
+router.get("/minecraft/bridge/poll", async (request, env) => {
+  if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
+  if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
+  const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
+  const forwarded = new Request("https://bridge/poll", request);
+  return stub.fetch(forwarded);
+});
+
+router.post("/minecraft/bridge/result", async (request, env) => {
+  if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
+  if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
+  const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
+  const forwarded = new Request("https://bridge/result", request);
+  return stub.fetch(forwarded);
+});
 
 // Plain-HTTPS reachability probe: hosts whose egress proxies interfere with
 // WebSocket upgrades (the mod's hello never arrives) may still allow normal

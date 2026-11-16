@@ -167,6 +167,46 @@ describe("worker wiring", () => {
     const body = await res.json();
     assert.equal(body.ok, true);
   });
+
+  it("minecraft bridge poll requires the bearer token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/poll"),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it("minecraft bridge result requires the bearer token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/result", { method: "POST" }),
+      env,
+      ctx
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it("minecraft bridge poll forwards to the DO with a valid token", async () => {
+    const { ctx } = makeCtx();
+    const env = makeEnv([]);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/poll", {
+        headers: { authorization: "Bearer secret" },
+      }),
+      env,
+      ctx
+    );
+    // makeEnv's gateway stub returns "ok" for anything; the DO is stubbed by
+    // makeEnv only for gateway — missing bridge DO => 503 proves routing hit.
+    assert.ok(res.status === 503 || res.status === 200);
+  });
 });
 
 describe("slash command registration", () => {

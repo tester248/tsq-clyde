@@ -111,11 +111,24 @@ describe("MinecraftBridgeDO", () => {
     assert.equal(result.data.version, "26.3");
   });
 
-  it("returns bridge disconnected error for queries without a live socket", async () => {
+  it("queues queries without a socket for the poller (no immediate error)", async () => {
     const { bridge } = makeBridge();
-    const result = await bridge.query({ action: "status" });
-    assert.equal(result.ok, false);
-    assert.match(result.error, /disconnected/i);
+    const promise = bridge.query({ action: "status" });
+    assert.equal(bridge.queryQueue.length, 1);
+
+    const polled = await bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
+    const body = await polled.json();
+    assert.ok(body.query, "expected a queued query frame");
+    assert.equal(body.query.action, "status");
+    assert.equal(bridge.queryQueue.length, 0);
+
+    await bridge.fetch(new Request("https://bridge/result", {
+      method: "POST",
+      body: JSON.stringify({ id: body.query.id, ok: true, data: { version: "26.3" } }),
+    }));
+    const result = await promise;
+    assert.equal(result.ok, true);
+    assert.equal(result.data.version, "26.3");
   });
 
   it("times out a query when no result arrives", async () => {
@@ -146,5 +159,45 @@ describe("MinecraftBridgeDO", () => {
     const result = await promise;
     assert.equal(result.ok, false);
     assert.equal(result.error, "unknown player");
+  });
+
+  it("queues queries without a socket and resolves them via POST /result", async () => {
+    const { bridge } = makeBridge();
+    const promise = bridge.query({ action: "status" });
+
+    const polled = await bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
+    const body = await polled.json();
+    assert.ok(body.query, "expected a queued query frame");
+    assert.equal(body.query.action, "status");
+
+    const res = await bridge.fetch(new Request("https://bridge/result", {
+      method: "POST",
+      body: JSON.stringify({ id: body.query.id, ok: true, data: { version: "26.3" } }),
+    }));
+    assert.equal(res.status, 200);
+
+    const result = await promise;
+    assert.equal(result.ok, true);
+    assert.equal(result.data.version, "26.3");
+  });
+
+  it("long-poll waits and returns empty on timeout", async () => {
+    const { bridge, timers } = makeBridge();
+    const promise = bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
+    timers.schedules[timers.schedules.length - 1].fn(); // fire the poll timeout
+    const body = await (await promise).json();
+    assert.deepEqual(body, {});
+    assert.equal(typeof bridge.lastPollAt, "number", "lastPollAt should be set on poll");
+    assert.equal(bridge.queryQueue.length, 0);
+  });
+
+  it("reports pollConnected after a poll", async () => {
+    const { bridge, timers } = makeBridge();
+    const pollPromise = bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
+    timers.schedules[timers.schedules.length - 1].fn(); // release the waiter
+    await pollPromise;
+    const status = await (await bridge.fetch(new Request("https://bridge/status"))).json();
+    assert.equal(status.pollConnected, true);
+    assert.equal(status.queueLength, 0);
   });
 });
