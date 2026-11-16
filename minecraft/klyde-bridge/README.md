@@ -31,7 +31,10 @@ Artifact: `klyde-bridge-0.1.0.jar` in `build/libs/`.
 - **Mod awareness:** the mod roster is pushed at startup; Klyde injects a
   one-line summary per invocation and can enumerate full details via a tool.
 
-## Commands (`/klyde`, permissionless for everyone)
+## Commands (`/klyde`)
+
+Per-player settings are permissionless for everyone; ban/unban/clear require **op**
+(vanilla permission level 2+, no LuckPerms setup needed).
 
 | Command | Effect |
 |---|---|
@@ -39,6 +42,9 @@ Artifact: `klyde-bridge-0.1.0.jar` in `build/libs/`.
 | `/klyde privacy <on|off>` | opt out/in of sharing location + chat data |
 | `/klyde progress <on|off>` | hide/show Klyde's progress messages (this player) |
 | `/klyde messages <on|off>` | hide/show all Klyde messages (this player) |
+| `/klyde ban <player>` | (op) bar a player from invoking Klyde |
+| `/klyde unban <player>` | (op) lift a ban |
+| `/klyde clear` | (op) wipe the in-game conversation |
 
 ## Build matrix
 
@@ -112,7 +118,7 @@ Managed via `/klyde` in-game; share-by-default:
 
 ```json
 {
-  "alice": { "privacy": false, "showProgress": true, "showMessages": true }
+  "alice": { "privacy": false, "showProgress": true, "showMessages": true, "banned": false }
 }
 ```
 
@@ -120,6 +126,7 @@ Managed via `/klyde` in-game; share-by-default:
   (they appear as `[redacted]` in `/mc players`).
 - `showProgress: false` — hides Klyde's progress lines for that player.
 - `showMessages: false` — hides all Klyde messages for that player.
+- `banned: true` — the player cannot invoke Klyde (managed via `/klyde ban`).
 
 ## Scope notes
 

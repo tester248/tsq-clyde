@@ -17,6 +17,7 @@ import java.util.Map;
  *   privacy      — true = opt out of sharing location/chat data with Klyde
  *   showProgress  — false = hide Klyde's progress (thinking/working) messages
  *   showMessages  — false = hide all Klyde messages for this player
+ *   banned       — true = player is barred from invoking Klyde (ops only)
  *
  * Share-by-default: privacy defaults to false. All entries default to visible.
  */
@@ -25,6 +26,7 @@ public final class Preferences {
         public boolean privacy = false;
         public boolean showProgress = true;
         public boolean showMessages = true;
+        public boolean banned = false;
     }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -90,6 +92,15 @@ public final class Preferences {
 
     public synchronized void setShowMessages(String player, boolean on) {
         prefs(player).showMessages = on;
+        save();
+    }
+
+    public synchronized boolean isBanned(String player) {
+        return prefs(player).banned;
+    }
+
+    public synchronized void setBanned(String player, boolean banned) {
+        prefs(player).banned = banned;
         save();
     }
 }

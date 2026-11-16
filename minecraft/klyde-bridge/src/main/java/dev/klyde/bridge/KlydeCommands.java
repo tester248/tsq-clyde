@@ -1,6 +1,7 @@
 package dev.klyde.bridge;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 
@@ -11,12 +12,16 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
 /**
- * The /klyde command tree (permissionless — no LuckPerms requirement).
+ * The /klyde command tree (permissionless for preferences; ban/unban/clear
+ * require op — no LuckPerms requirement).
  *
  *   /klyde                       — help
  *   /klyde privacy <on|off>      — opt out/in of sharing location/chat data
  *   /klyde progress <on|off>     — hide/show Klyde's progress messages
  *   /klyde messages <on|off>     — hide/show all Klyde messages
+ *   /klyde ban <player>          — (op) bar a player from invoking Klyde
+ *   /klyde unban <player>        — (op) lift a ban
+ *   /klyde clear                 — (op) wipe the in-game conversation
  */
 public final class KlydeCommands {
     private KlydeCommands() {}
@@ -39,13 +44,41 @@ public final class KlydeCommands {
                     KlydeBridgeMod.get().getPreferences().setShowProgress(sourcePlayerName(ctx), on)))
                 .then(toggle("messages", (ctx, on) ->
                     KlydeBridgeMod.get().getPreferences().setShowMessages(sourcePlayerName(ctx), on)))
+                .then(Commands.literal("ban")
+                    .then(Commands.argument("player", StringArgumentType.word())
+                        .executes(ctx -> ban(ctx, true))))
+                .then(Commands.literal("unban")
+                    .then(Commands.argument("player", StringArgumentType.word())
+                        .executes(ctx -> ban(ctx, false))))
                 .then(Commands.literal("clear").executes(KlydeCommands::clear))
                 .executes(ctx -> {
                     ctx.getSource().sendSuccess(() -> Component.literal(
-                        "Klyde: /klyde privacy <on|off> · progress <on|off> · messages <on|off> · clear (ops)"), false);
+                        "Klyde: /klyde privacy <on|off> · progress <on|off> · messages <on|off> · ban/unban <player> (ops) · clear (ops)"), false);
                     return 1;
                 })
         );
+    }
+
+    // Ops may ban/unban players from invoking Klyde.
+    private static int ban(CommandContext<CommandSourceStack> ctx, boolean banned) {
+        ServerPlayer p;
+        try {
+            p = ctx.getSource().getPlayerOrException();
+        } catch (Exception e) {
+            ctx.getSource().sendFailure(Component.literal("You must be in-game to manage bans."));
+            return 0;
+        }
+        if (!p.permissions().hasPermission(
+                new net.minecraft.server.permissions.Permission.HasCommandLevel(
+                    net.minecraft.server.permissions.PermissionLevel.ADMINS))) {
+            ctx.getSource().sendFailure(Component.literal("Only ops can manage Klyde bans."));
+            return 0;
+        }
+        String target = StringArgumentType.getString(ctx, "player");
+        KlydeBridgeMod.get().getPreferences().setBanned(target, banned);
+        ctx.getSource().sendSuccess(() -> Component.literal(
+            "Klyde: " + target + (banned ? " banned from invoking Klyde" : " unban")), false);
+        return 1;
     }
 
     // Ops (vanilla permission level 2+) wipe the in-game conversation.

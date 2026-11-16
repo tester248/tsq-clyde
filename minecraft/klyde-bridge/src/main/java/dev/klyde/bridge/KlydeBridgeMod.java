@@ -75,13 +75,15 @@ public final class KlydeBridgeMod implements ModInitializer {
 
         // Chat capture feeds the recent_chat query (awareness only — the
         // Discord <-> in-game bridge is handled by Simple Discord Link, not
-        // by Klyde). Also detect "klyde" anywhere in chat for invocation.
+        // by Klyde). Also detect "klyde" anywhere in chat for invocation —
+        // only real players can invoke, and banned players are skipped.
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
-            String player = sender != null ? sender.getName().getString() : "?";
+            if (sender == null) return; // system messages never invoke
+            String player = sender.getName().getString();
             String text = message.signedContent();
             queryHandler.recordChat(player, text, System.currentTimeMillis());
             String query = extractInvocationQuery(text);
-            if (query != null && client != null) {
+            if (query != null && client != null && !preferences.isBanned(player)) {
                 client.invoke(player, query);
             }
         });
