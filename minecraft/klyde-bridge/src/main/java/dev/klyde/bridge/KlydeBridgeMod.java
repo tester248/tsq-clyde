@@ -23,6 +23,7 @@ public final class KlydeBridgeMod implements ModInitializer {
     private static KlydeBridgeMod INSTANCE;
 
     private BridgeConfig config;
+    private Preferences preferences;
     private MinecraftServer server;
     private BridgeClient client;
     private QueryHandler queryHandler;
@@ -40,6 +41,10 @@ public final class KlydeBridgeMod implements ModInitializer {
         return config;
     }
 
+    public Preferences getPreferences() {
+        return preferences;
+    }
+
     public long serverStartNanos() {
         return serverStartNanos;
     }
@@ -48,7 +53,9 @@ public final class KlydeBridgeMod implements ModInitializer {
     public void onInitialize() {
         INSTANCE = this;
         config = BridgeConfig.load();
+        preferences = new Preferences();
         queryHandler = new QueryHandler(this);
+        KlydeCommands.register();
 
         ServerLifecycleEvents.SERVER_STARTED.register(srv -> {
             this.server = srv;
@@ -64,13 +71,30 @@ public final class KlydeBridgeMod implements ModInitializer {
 
         // Chat capture feeds the recent_chat query (awareness only — the
         // Discord <-> in-game bridge is handled by Simple Discord Link, not
-        // by Klyde).
+        // by Klyde). Also detect "klyde" anywhere in chat for invocation.
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
             String player = sender != null ? sender.getName().getString() : "?";
-            queryHandler.recordChat(player, message.signedContent(), System.currentTimeMillis());
+            String text = message.signedContent();
+            queryHandler.recordChat(player, text, System.currentTimeMillis());
+            String query = extractInvocationQuery(text);
+            if (query != null && client != null) {
+                client.invoke(player, query);
+            }
         });
 
         LOGGER.info("Klyde bridge initialized (announce={})", config.announce());
+    }
+
+    // If the message contains the word "klyde" (case-insensitive, word
+    // boundary), return the remainder as the invocation query, or null.
+    static String extractInvocationQuery(String text) {
+        if (text == null) return null;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+            .compile("(?i)\\bklyde\\b")
+            .matcher(text);
+        if (!m.find()) return null;
+        String query = (text.substring(0, m.start()) + " " + text.substring(m.end())).trim();
+        return query.isEmpty() ? null : query;
     }
 
     private void startClient() {

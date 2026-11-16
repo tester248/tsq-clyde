@@ -1,5 +1,6 @@
 package dev.klyde.bridge;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -8,31 +9,34 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.WebSocket;
 import java.time.Duration;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Outbound WebSocket client. Connects to the Cloudflare worker's
- * /minecraft/bridge/connect endpoint, authenticates with a hello frame, and
- * answers query frames. Reconnects with backoff. Game-state reads happen on
- * the server thread (via MinecraftServer.execute) — never on WS threads.
+ * Bridge client — long-poll transport over plain HTTPS.
+ *
+ * Egress proxies on some hosts (e.g. managed Minecraft hosting) terminate
+ * WebSocket upgrades: the handshake appears to succeed but frames never
+ * arrive at the Cloudflare DO. Plain HTTPS is proven to work, so this client
+ * polls the worker for queued query frames and POSTs results back.
+ *
+ * Transport: GET /minecraft/bridge/poll (long-poll, up to 15s) -> may return
+ * {query:{id,action,player}}; then POST /minecraft/bridge/result with the
+ * query's result. Both are Bearer-authenticated.
  */
 public final class BridgeClient {
-    private static final int MAX_BACKOFF_MS = 30_000;
+    private static final int POLL_TIMEOUT_MS = 15_000;
+    private static final long POLL_INTERVAL_MS = 1_000;
+    private static final long FIRST_SUCCESS_ANNOUNCE_MS = 5_000;
 
     private final KlydeBridgeMod mod;
     private final HttpClient http;
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final AtomicBoolean announced = new AtomicBoolean(false);
 
-    private WebSocket socket;
     private QueryHandler queryHandler;
-    private int backoffMs = 1_000;
+    private Thread pollThread;
+    private long lastPollAt;
 
     public BridgeClient(KlydeBridgeMod mod) {
         this.mod = mod;
@@ -43,194 +47,236 @@ public final class BridgeClient {
     public void start() {
         running.set(true);
         connectivityCheck();
-        connect();
+        pushRoster();
+        pollThread = new Thread(this::pollLoop, "klyde-bridge-poll");
+        pollThread.setDaemon(true);
+        pollThread.start();
+    }
+
+    // Enumerate installed mods and push them to the worker so the brain can
+    // inject a roster summary and answer `mods` tool queries. Best-effort.
+    private void pushRoster() {
+        String rosterUrl = deriveUrl("/roster");
+        if (rosterUrl == null) return;
+        try {
+            JsonArray mods = new JsonArray();
+            for (net.fabricmc.loader.api.ModContainer container : net.fabricmc.loader.api.FabricLoader.getInstance().getAllMods()) {
+                String id = container.getMetadata().getId();
+                if (id.startsWith("fabric") || id.equals("klyde-bridge")) continue;
+                JsonObject m = new JsonObject();
+                m.addProperty("id", id);
+                m.addProperty("name", container.getMetadata().getName() == null ? id : container.getMetadata().getName());
+                m.addProperty("version", container.getMetadata().getVersion().getFriendlyString());
+                mods.add(m);
+            }
+            JsonObject payload = new JsonObject();
+            payload.add("mods", mods);
+            HttpRequest req = HttpRequest.newBuilder(URI.create(rosterUrl))
+                .timeout(Duration.ofSeconds(10))
+                .header("Authorization", "Bearer " + mod.getConfig().token())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+                .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            KlydeBridgeMod.LOGGER.info("Klyde roster pushed: {} mods (status {})", mods.size(), resp.statusCode());
+        } catch (Exception e) {
+            KlydeBridgeMod.LOGGER.warn("Klyde roster push failed: {}", e.toString());
+        }
+    }
+
+    public void stop() {
+        running.set(false);
+        if (pollThread != null) {
+            pollThread.interrupt();
+            pollThread = null;
+        }
     }
 
     // Probe whether plain HTTPS outbound survives the host's egress proxy
-    // (WebSocket upgrades may be intercepted/terminated while normal HTTPS
-    // still works). Diagnostic only — the WS remains the primary transport.
+    // (diagnostic only; the poll transport itself depends on plain HTTPS).
     private void connectivityCheck() {
-        String bridgeUrl = mod.getConfig().bridgeUrl();
-        if (!mod.getConfig().isUsable()) return;
-        String pingUrl;
-        try {
-            pingUrl = bridgeUrl
-                .replaceFirst("^wss://", "https://")
-                .replaceFirst("/connect$", "/ping");
-        } catch (Exception e) {
-            return;
-        }
+        String pingUrl = deriveUrl("/ping");
+        if (pingUrl == null) return;
         try {
             HttpRequest req = HttpRequest.newBuilder(URI.create(pingUrl))
                 .timeout(Duration.ofSeconds(10))
                 .GET()
                 .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) {
-                KlydeBridgeMod.LOGGER.info(
-                    "Klyde connectivity check: plain HTTPS OK ({} -> {})",
-                    resp.statusCode(), pingUrl);
-            } else {
-                KlydeBridgeMod.LOGGER.warn(
-                    "Klyde connectivity check: plain HTTPS returned {} ({})",
-                    resp.statusCode(), pingUrl);
-            }
+            KlydeBridgeMod.LOGGER.info(
+                "Klyde connectivity check: plain HTTPS {} ({})",
+                resp.statusCode(), pingUrl);
         } catch (Exception e) {
             KlydeBridgeMod.LOGGER.warn(
                 "Klyde connectivity check failed (outbound blocked?): {}", e.toString());
         }
     }
 
-    public void stop() {
-        running.set(false);
-        if (socket != null) {
-            try {
-                socket.sendClose(WebSocket.NORMAL_CLOSURE, "server stopping");
-            } catch (Exception ignored) {
-            }
-            socket = null;
-        }
-        scheduler.shutdownNow();
-    }
-
-    private void connect() {
-        if (!running.get() || !mod.getConfig().isUsable()) return;
+    private String deriveUrl(String suffix) {
+        String bridgeUrl = mod.getConfig().bridgeUrl();
+        if (bridgeUrl.isEmpty()) return null;
         try {
-            URI uri = URI.create(mod.getConfig().bridgeUrl());
-            socket = http.newWebSocketBuilder()
-                .header("Authorization", "Bearer " + mod.getConfig().token())
-                .buildAsync(uri, new Listener())
-                .get(10, TimeUnit.SECONDS);
-            backoffMs = 1_000; // reset on successful connect
+            return bridgeUrl
+                .replaceFirst("^wss://", "https://")
+                .replaceFirst("/connect$", "") + suffix;
         } catch (Exception e) {
-            KlydeBridgeMod.LOGGER.warn("Klyde bridge connect failed: {}", e.toString());
-            scheduleReconnect();
+            return null;
         }
     }
 
-    private void scheduleReconnect() {
-        if (!running.get()) return;
-        final int delay = backoffMs;
-        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
-        scheduler.schedule(this::connect, delay, TimeUnit.MILLISECONDS);
-    }
-
-    private void send(String json) {
-        WebSocket ws = socket;
-        if (ws != null) {
+    private void pollLoop() {
+        while (running.get()) {
             try {
-                ws.sendText(json, true);
-                KlydeBridgeMod.LOGGER.info("Klyde bridge sent: {}", json);
+                pollOnce();
+                Thread.sleep(POLL_INTERVAL_MS);
+            } catch (InterruptedException ie) {
+                return;
             } catch (Exception e) {
-                KlydeBridgeMod.LOGGER.warn("Klyde bridge send failed: {}", e.toString());
+                KlydeBridgeMod.LOGGER.warn("Klyde bridge poll error: {}", e.toString());
+                try {
+                    Thread.sleep(POLL_INTERVAL_MS * 3);
+                } catch (InterruptedException ie) {
+                    return;
+                }
             }
         }
     }
 
-    private void handleFrame(String raw) {
-        KlydeBridgeMod.LOGGER.info("Klyde bridge received frame: {}", raw);
+    private void pollOnce() throws Exception {
+        String pollUrl = deriveUrl("/poll?timeout=" + POLL_TIMEOUT_MS);
+        if (pollUrl == null) return;
+
+        HttpRequest req = HttpRequest.newBuilder(URI.create(pollUrl))
+            .timeout(Duration.ofSeconds(POLL_TIMEOUT_MS / 1000 + 5))
+            .header("Authorization", "Bearer " + mod.getConfig().token())
+            .GET()
+            .build();
+        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+
+        if (resp.statusCode() != 200) {
+            KlydeBridgeMod.LOGGER.warn("Klyde bridge poll returned {}", resp.statusCode());
+            return;
+        }
+        if (!announced.getAndSet(true)) {
+            onFirstSuccess();
+        }
+        lastPollAt = System.currentTimeMillis();
+
         JsonElement el;
         try {
-            el = JsonParser.parseString(raw);
+            el = JsonParser.parseString(resp.body());
         } catch (Exception e) {
             return;
         }
         if (!el.isJsonObject()) return;
-        JsonObject frame = el.getAsJsonObject();
-        String type = frame.has("type") ? frame.get("type").getAsString() : "";
+        JsonObject body = el.getAsJsonObject();
+        if (body.has("message") && body.get("message").isJsonObject()) {
+            JsonObject message = body.getAsJsonObject("message");
+            handleMessageFrame(message);
+            return;
+        }
+        if (!body.has("query") || !body.get("query").isJsonObject()) return;
 
-        switch (type) {
-            case "query" -> {
-                long id = frame.has("id") ? frame.get("id").getAsLong() : -1L;
-                String action = frame.has("action") ? frame.get("action").getAsString() : "";
-                String player = frame.has("player") && !frame.get("player").isJsonNull()
-                    ? frame.get("player").getAsString() : null;
-                // Game state must be read on the server thread.
-                var server = mod.getServer();
-                if (server == null) {
-                    sendResult(id, false, "server not ready");
-                    return;
-                }
-                server.execute(() -> {
-                    JsonObject result = queryHandler.handle(action, player);
-                    sendResult(id, true, result);
-                });
+        JsonObject query = body.getAsJsonObject("query");
+        long id = query.has("id") ? query.get("id").getAsLong() : -1L;
+        String action = query.has("action") ? query.get("action").getAsString() : "";
+        String player = query.has("player") && !query.get("player").isJsonNull()
+            ? query.get("player").getAsString() : null;
+
+        KlydeBridgeMod.LOGGER.info("Klyde bridge got query {} action={} player={}", id, action, player);
+
+        // Game state must be read on the server thread.
+        var server = mod.getServer();
+        if (server == null) {
+            postResult(id, false, "server not ready");
+            return;
+        }
+        server.execute(() -> {
+            JsonObject result = queryHandler.handle(action, player);
+            postResult(id, true, result);
+        });
+    }
+
+    // Broadcast an outgoing Klyde chat frame to eligible players.
+    private void handleMessageFrame(JsonObject message) {
+        String kind = message.has("kind") ? message.get("kind").getAsString() : "reply";
+        String text = message.has("text") ? message.get("text").getAsString() : "";
+        if (text.isEmpty()) return;
+
+        var server = mod.getServer();
+        if (server == null) return;
+        server.execute(() -> {
+            net.minecraft.network.chat.Component component =
+                net.minecraft.network.chat.Component.literal(text).withStyle(mod.getConfig().chatColor());
+            boolean isProgress = "phase".equals(kind);
+            for (net.minecraft.server.level.ServerPlayer p : server.getPlayerList().getPlayers()) {
+                String name = p.getName().getString();
+                if (!mod.getPreferences().getShowMessages(name)) continue;
+                if (isProgress && !mod.getPreferences().getShowProgress(name)) continue;
+                p.sendSystemMessage(component);
             }
-            case "ping" -> send("{\"type\":\"pong\"}");
-            case "hello" -> {
-                if (!frame.has("ok") || !frame.get("ok").getAsBoolean()) {
-                    KlydeBridgeMod.LOGGER.warn("Klyde bridge rejected hello; closing");
-                    closeSocket();
-                }
+        });
+    }
+
+    // Send an in-game invocation (chat message containing "klyde") to the
+    // worker. Best-effort: failures are logged, never break chat.
+    public void invoke(String player, String text) {
+        String invokeUrl = deriveUrl("/invoke");
+        if (invokeUrl == null) return;
+        JsonObject payload = new JsonObject();
+        payload.addProperty("player", player);
+        payload.addProperty("text", text);
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(invokeUrl))
+                .timeout(Duration.ofSeconds(10))
+                .header("Authorization", "Bearer " + mod.getConfig().token())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+                .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 202) {
+                KlydeBridgeMod.LOGGER.warn("Klyde invoke returned {}", resp.statusCode());
             }
-            default -> { /* ignore */ }
+        } catch (Exception e) {
+            KlydeBridgeMod.LOGGER.warn("Klyde invoke failed: {}", e.toString());
         }
     }
 
-    private void sendResult(long id, boolean ok, Object data) {
+    private void onFirstSuccess() {
+        KlydeBridgeMod.LOGGER.info("Klyde bridge connected (poll transport)");
+        if (mod.getConfig().announce()) {
+            var server = mod.getServer();
+            if (server != null) {
+                server.execute(() -> server.getPlayerList().broadcastSystemMessage(
+                    net.minecraft.network.chat.Component.literal("[Klyde] bridge connected"),
+                    false));
+            }
+        }
+    }
+
+    private void postResult(long id, boolean ok, Object data) {
+        String resultUrl = deriveUrl("/result");
+        if (resultUrl == null) return;
         StringBuilder sb = new StringBuilder();
-        sb.append("{\"type\":\"result\",\"id\":").append(id)
+        sb.append("{\"id\":").append(id)
           .append(",\"ok\":").append(ok);
         if (data != null) {
             sb.append(",\"data\":").append(data);
         }
         sb.append("}");
-        send(sb.toString());
-    }
-
-    private void closeSocket() {
-        WebSocket ws = socket;
-        socket = null;
-        if (ws != null) {
-            try {
-                ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye");
-            } catch (Exception ignored) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(resultUrl))
+                .timeout(Duration.ofSeconds(10))
+                .header("Authorization", "Bearer " + mod.getConfig().token())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(sb.toString()))
+                .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                KlydeBridgeMod.LOGGER.warn("Klyde bridge result posted but got {}", resp.statusCode());
             }
-        }
-    }
-
-    /** WebSocket listener — callbacks arrive on HttpClient threads. */
-    private final class Listener implements WebSocket.Listener {
-        private final StringBuilder buffer = new StringBuilder();
-
-        @Override
-        public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
-            buffer.append(data);
-            if (last) {
-                String raw = buffer.toString();
-                buffer.setLength(0);
-                handleFrame(raw);
-            }
-            ws.request(1);
-            return null;
-        }
-
-        @Override
-        public void onOpen(WebSocket ws) {
-            KlydeBridgeMod.LOGGER.info("Klyde bridge connected; sending hello");
-            // Authenticate first frame.
-            send("{\"type\":\"hello\",\"token\":\"" + mod.getConfig().token() + "\"}");
-            ws.request(1);
-            if (mod.getConfig().announce()) {
-                mod.getServer().execute(() ->
-                    mod.getServer().getPlayerList().broadcastSystemMessage(
-                        net.minecraft.network.chat.Component.literal("[Klyde] bridge connected"),
-                        false));
-            }
-        }
-
-        @Override
-        public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
-            KlydeBridgeMod.LOGGER.info("Klyde bridge closed ({} {})", statusCode, reason);
-            socket = null;
-            scheduleReconnect();
-            return null;
-        }
-
-        @Override
-        public void onError(WebSocket ws, Throwable error) {
-            KlydeBridgeMod.LOGGER.warn("Klyde bridge error: {}", error.toString());
-            scheduleReconnect();
+        } catch (Exception e) {
+            KlydeBridgeMod.LOGGER.warn("Klyde bridge result POST failed: {}", e.toString());
         }
     }
 }

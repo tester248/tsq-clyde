@@ -65,7 +65,7 @@ final class QueryHandler {
         JsonArray names = new JsonArray();
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             String name = p.getName().getString();
-            if (mod.getConfig().isOptedOut(name)) {
+            if (mod.getPreferences().isPrivate(name)) {
                 names.add("[redacted]");
             } else {
                 names.add(name);
@@ -79,7 +79,7 @@ final class QueryHandler {
     private JsonObject recentChat() {
         JsonArray messages = new JsonArray();
         for (ChatLog.Entry e : chatLog.entries()) {
-            if (mod.getConfig().isOptedOut(e.player())) {
+            if (mod.getPreferences().isPrivate(e.player())) {
                 continue; // privacy: never expose opted-out players' words
             }
             JsonObject m = new JsonObject();
@@ -97,7 +97,7 @@ final class QueryHandler {
         if (player == null || player.isBlank()) {
             return error("player is required");
         }
-        if (mod.getConfig().isOptedOut(player)) {
+        if (mod.getPreferences().isPrivate(player)) {
             return error(player + " has opted out of location data");
         }
         ServerPlayer p = server.getPlayerList().getPlayer(player);
