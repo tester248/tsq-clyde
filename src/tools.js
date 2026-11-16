@@ -178,11 +178,15 @@ const minecraftTool = {
       "Query the Minecraft server through its bridge mod (read-only). Actions: " +
       "status (version, TPS, uptime, player count), players (online player names), " +
       "recent_chat (last chat messages), player_location (one player's coordinates " +
-      "and dimension). Use when the answer depends on live server state.",
+      "and dimension), mods (full list of installed mods from the server's roster). " +
+      "Use when the answer depends on live server state.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["status", "players", "recent_chat", "player_location"] },
+        action: {
+          type: "string",
+          enum: ["status", "players", "recent_chat", "player_location", "mods"],
+        },
         player: { type: "string", description: "Player name (player_location only)" },
       },
       required: ["action"],
@@ -358,7 +362,7 @@ async function sessionSearchImpl(args, env) {
 // which round-trips it to the mod and back. Read-only awareness actions only
 // (no commands in this slice).
 
-const MINECRAFT_ACTIONS = ["status", "players", "recent_chat", "player_location"];
+const MINECRAFT_ACTIONS = ["status", "players", "recent_chat", "player_location", "mods"];
 
 async function minecraftImpl(args, env) {
   const action = args.action;
@@ -374,6 +378,21 @@ async function minecraftImpl(args, env) {
   }
 
   const stub = binding.get(binding.idFromName("minecraft"));
+
+  // `mods` is served straight from the bridge's stored roster (no mod
+  // round-trip needed) — the mod pushes it at startup.
+  if (action === "mods") {
+    try {
+      const res = await stub.fetch("https://bridge/rosterGet");
+      if (!res.ok) return { success: false, error: `roster read failed: ${res.status}` };
+      const body = await res.json();
+      const mods = Array.isArray(body.mods) ? body.mods : [];
+      return { success: true, mods, count: mods.length };
+    } catch (err) {
+      return { success: false, error: `minecraft mods error: ${err?.message || err}` };
+    }
+  }
+
   const query = { action };
   if (args.player) query.player = args.player;
 

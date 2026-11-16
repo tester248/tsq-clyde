@@ -51,6 +51,27 @@ describe("formatGameChat", () => {
     assert.ok(!out[0].includes("- bullet"));
   });
 
+  it("strips inline markdown and emoji", () => {
+    const out = formatGameChat("**Bold** and *italics* and `code` and 🌍 emoji 🚀");
+    assert.equal(out.length, 1);
+    assert.ok(out[0].includes("Bold"));
+    assert.ok(out[0].includes("italics"));
+    assert.ok(out[0].includes("code"));
+    assert.ok(!out[0].includes("**"));
+    assert.ok(!out[0].includes("*"));
+    assert.ok(!out[0].includes("`"));
+    assert.ok(!out[0].includes("🌍"));
+    assert.ok(!out[0].includes("🚀"));
+  });
+
+  it("strips markdown split across the emphasis boundaries", () => {
+    const out = formatGameChat("A *quick note:** the server has **166 mods**");
+    assert.equal(out.length, 1);
+    assert.ok(!out[0].includes("*"));
+    assert.ok(out[0].includes("quick note"));
+    assert.ok(out[0].includes("166 mods"));
+  });
+
   it("chunks long replies at sentence boundaries, capped by maxChars", () => {
     const long = Array.from({ length: 15 }, (_, i) => `Sentence number ${i} has a bit of length to it.`).join(" ");
     const out = formatGameChat(long, { maxChars: 120, maxMessages: 10 });
@@ -75,7 +96,9 @@ describe("processMinecraftInvocation", () => {
       ],
     });
     let seenSystem = null;
+    let seenGameHint = null;
     const fakeLoop = async ({ messages }) => {
+      seenGameHint = messages.find((m) => m.role === "system" && m.content.includes("Minecraft chat"));
       seenSystem = messages.find((m) => m.role === "system" && m.content.startsWith("Server mods"));
       return { text: "ok", provider: "inception", totalTokens: 3 };
     };
@@ -87,6 +110,7 @@ describe("processMinecraftInvocation", () => {
       env,
       runAgentLoop: fakeLoop,
     });
+    assert.ok(seenGameHint, "expected the game-chat style hint");
     assert.ok(seenSystem, "expected the roster system message");
     assert.ok(seenSystem.content.includes("The Aether"));
     assert.ok(seenSystem.content.includes("Mythic Metals"));

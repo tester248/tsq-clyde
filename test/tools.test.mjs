@@ -376,12 +376,15 @@ describe("session_search tool", () => {
 
 describe("minecraft tool", () => {
   // Fake MINECRAFT_BRIDGE_DO binding: get(idFromName(...)) returns a stub
-  // whose fetch handles /query and returns a canned result.
+  // whose fetch handles /query and /rosterGet with canned results.
   function makeBridgeEnv(result, opts = {}) {
     const calls = [];
+    const roster = opts.roster ?? [];
     const stub = {
       fetch: async (url, init) => {
-        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        const u = String(url);
+        calls.push({ url: u, body: init?.body ? JSON.parse(init.body) : null });
+        if (u.includes("/rosterGet")) return Response.json({ mods: roster });
         return Response.json(result);
       },
     };
@@ -437,6 +440,31 @@ describe("minecraft tool", () => {
     assert.equal(out.x, 100);
     assert.equal(out.dimension, "overworld");
     assert.equal(calls[0].body.player, "Alice");
+  });
+
+  it("mods returns the stored roster without a mod round-trip", async () => {
+    const roster = [
+      { id: "aether", name: "The Aether", version: "1.0" },
+      { id: "mythicmetals", name: "Mythic Metals", version: "2.0" },
+    ];
+    const { env, calls } = makeBridgeEnv(null, { roster });
+    const out = await executeTool("minecraft", { action: "mods" }, env);
+    assert.equal(out.success, true);
+    assert.equal(out.count, 2);
+    assert.deepEqual(out.mods, roster);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.includes("/rosterGet"));
+    assert.equal(calls[0].body, null, "mods must not POST a query body");
+  });
+
+  it("mods reports an error when the roster read fails", async () => {
+    const stub = {
+      fetch: async () => new Response("boom", { status: 500 }),
+    };
+    const binding = { idFromName: () => "minecraft", get: () => stub };
+    const out = await executeTool("minecraft", { action: "mods" }, { MINECRAFT_BRIDGE_DO: binding });
+    assert.equal(out.success, false);
+    assert.ok(out.error);
   });
 
   it("surfaces a non-ok bridge result as { error }", async () => {

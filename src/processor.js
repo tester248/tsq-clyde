@@ -258,11 +258,22 @@ const MC_PHASE_MESSAGES = {
   compose: "Klyde is composing…",
 };
 
-// Format an LLM answer for game chat: strip markdown/structured artifacts,
-// then split into short chunks at sentence boundaries. Minecraft chat is
-// read as short lines, not paragraphs.
+// Format an LLM answer for game chat: strip markdown/structured artifacts
+// (line-leading and inline), remove emoji (they render badly/missing in game
+// chat), then split into short chunks at sentence boundaries. Minecraft chat
+// is read as short lines, not paragraphs.
 export function formatGameChat(text, { maxChars = 200, maxMessages = 5 } = {}) {
   const cleaned = String(text || "")
+    // strip emoji + variation selectors
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u20E3]/gu, "")
+    // strip inline markdown: **bold**, *italics*, __underline__, `code`
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    // leftover lone asterisks from malformed emphasis (e.g. "*quick note:**")
+    .replace(/\*/g, "")
+    // strip line-leading markdown markers
     .split("\n")
     .map((line) => line.replace(/^(\s*)(#+\s*|\*\s*|-\s*|>\s*)/, "$1").trim())
     .filter(Boolean)
@@ -359,6 +370,16 @@ export async function processMinecraftInvocation({
   const updatedState = await updatedResp.json();
 
   const messages = [];
+  // Game-chat style guidance: the agent hint normally injected by the loop is
+  // Discord-oriented and skipped when system messages exist, so state it here.
+  messages.push({
+    role: "system",
+    content:
+      "You are answering a player inside Minecraft chat. Reply in short, " +
+      "plain sentences — no markdown, no emoji, no bullet lists. Only state " +
+      "facts you obtained from the provided tools or context; never invent " +
+      "server names, versions, mods, or details.",
+  });
   if (updatedState.summary) {
     messages.push({ role: "system", content: `Summary of previous conversation: ${updatedState.summary}` });
   }
