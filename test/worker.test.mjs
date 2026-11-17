@@ -77,6 +77,74 @@ describe("worker wiring", () => {
     assert.equal(wakes.length, 1);
   });
 
+  it("minecraft bridge routes do not wake the gateway (avoids DO free-tier drain)", async () => {
+    const calls = [];
+    const { ctx, background } = makeCtx();
+    const env = makeEnv(calls);
+    env.MC_BRIDGE_TOKEN = "secret";
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/poll?timeout=1000", {
+        headers: { authorization: "Bearer secret" },
+      }),
+      env,
+      ctx
+    );
+    await Promise.allSettled(background);
+    const wakes = calls.filter((c) => c.url.endsWith("/wake") && c.method === "POST");
+    assert.equal(wakes.length, 0, "bridge polls must not wake the gateway");
+  });
+
+  it("bridge poll degrades to 200 {} when the DO hits the free-tier duration cap", async () => {
+    const env = {
+      MC_BRIDGE_TOKEN: "secret",
+      MINECRAFT_BRIDGE_DO: {
+        idFromName: (n) => n,
+        get: () => ({
+          fetch: async () => {
+            throw new Error("Exceeded allowed duration in Durable Objects free tier.");
+          },
+        }),
+      },
+    };
+    const { ctx, background } = makeCtx();
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/poll", {
+        headers: { authorization: "Bearer secret" },
+      }),
+      env,
+      ctx
+    );
+    await Promise.allSettled(background);
+    assert.equal(res.status, 200, "poll must never 500 while the DO is over budget");
+    assert.deepEqual(await res.json(), {});
+  });
+
+  it("bridge invoke degrades to 202 while the DO is over the free-tier cap", async () => {
+    const env = {
+      MC_BRIDGE_TOKEN: "secret",
+      MINECRAFT_BRIDGE_DO: {
+        idFromName: (n) => n,
+        get: () => ({
+          fetch: async () => {
+            throw new Error("Exceeded allowed duration in Durable Objects free tier.");
+          },
+        }),
+      },
+    };
+    const { ctx, background } = makeCtx();
+    const res = await worker.fetch(
+      new Request("https://x/minecraft/bridge/invoke", {
+        method: "POST",
+        headers: { authorization: "Bearer secret" },
+        body: JSON.stringify({ player: "Alice", text: "klyde hi" }),
+      }),
+      env,
+      ctx
+    );
+    await Promise.allSettled(background);
+    assert.equal(res.status, 202);
+  });
+
   it("GET /gateway/status proxies the gateway stub", async () => {
     const calls = [];
     const { ctx, background } = makeCtx();

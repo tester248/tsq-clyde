@@ -182,28 +182,24 @@ describe("MinecraftBridgeDO", () => {
     assert.equal(result.data.version, "26.3");
   });
 
-  it("long-poll waits and returns empty on timeout", async () => {
-    const { bridge, timers } = makeBridge();
-    const promise = bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
-    timers.schedules[timers.schedules.length - 1].fn(); // fire the poll timeout
-    const body = await (await promise).json();
+  it("poll returns empty immediately when nothing is queued", async () => {
+    const { bridge } = makeBridge();
+    const body = await (await bridge.fetch(new Request("https://bridge/poll"))).json();
     assert.deepEqual(body, {});
     assert.equal(typeof bridge.lastPollAt, "number", "lastPollAt should be set on poll");
     assert.equal(bridge.queryQueue.length, 0);
   });
 
   it("reports pollConnected after a poll", async () => {
-    const { bridge, timers } = makeBridge();
-    const pollPromise = bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
-    timers.schedules[timers.schedules.length - 1].fn(); // release the waiter
-    await pollPromise;
+    const { bridge } = makeBridge();
+    await bridge.fetch(new Request("https://bridge/poll"));
     const status = await (await bridge.fetch(new Request("https://bridge/status"))).json();
     assert.equal(status.pollConnected, true);
     assert.equal(status.queueLength, 0);
   });
 
   it("invoke routes through the configured processor into the outbox", async () => {
-    const { bridge, timers } = makeBridge({
+    const { bridge } = makeBridge({
       runInvocation: async ({ player, text }, push) => {
         assert.equal(player, "Alice");
         assert.equal(text, "klyde hi");
@@ -217,15 +213,14 @@ describe("MinecraftBridgeDO", () => {
     }));
     assert.equal(res.status, 202);
 
-    const poll1 = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+    const poll1 = await (await bridge.fetch(new Request("https://bridge/poll"))).json();
     assert.ok(poll1.message, "expected a message frame from the outbox");
     assert.equal(poll1.message.kind, "phase");
-    const poll2 = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+    const poll2 = await (await bridge.fetch(new Request("https://bridge/poll"))).json();
     assert.equal(poll2.message.kind, "reply");
 
-    const poll3Promise = bridge.fetch(new Request("https://bridge/poll?timeout=1000"));
-    timers.schedules[timers.schedules.length - 1].fn();
-    assert.deepEqual(await (await poll3Promise).json(), {});
+    const poll3 = await (await bridge.fetch(new Request("https://bridge/poll"))).json();
+    assert.deepEqual(poll3, {});
   });
 
   it("invoke without a processor still accepts and returns 202", async () => {
@@ -331,7 +326,13 @@ describe("MinecraftBridgeDO", () => {
         method: "POST",
         body: JSON.stringify({ player: "Alice", text: "hello" }),
       }));
-      const poll = await (await bridge.fetch(new Request("https://bridge/poll?timeout=1000"))).json();
+      // Invocation runs asynchronously (the invoke route returns 202), so
+      // poll until the reply lands in the outbox — polls are instant now.
+      let poll = {};
+      for (let i = 0; i < 100 && !poll.message; i++) {
+        poll = await (await bridge.fetch(new Request("https://bridge/poll"))).json();
+        if (!poll.message) await new Promise((r) => setTimeout(r, 10));
+      }
       assert.ok(poll.message, "expected a reply frame from the real invocation");
       assert.equal(poll.message.kind, "reply");
       assert.equal(poll.message.text, "yes");

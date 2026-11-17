@@ -359,12 +359,28 @@ function bridgeAuth(request, env) {
   return auth === `Bearer ${env.MC_BRIDGE_TOKEN}`;
 }
 
+// Forward to a Durable Object, degrading gracefully while the free tier's
+// daily DO duration budget is exhausted (resets at UTC 00:00). At that point
+// stub.fetch throws "Exceeded allowed duration in Durable Objects free tier",
+// which would 500 every poll and spam the mod's logs. Instead return the
+// status the mod already treats as success so it keeps polling quietly and
+// recovers automatically after the reset.
+async function bridgeForward(stub, forwarded, fallback = () => new Response("ok")) {
+  try {
+    return await stub.fetch(forwarded);
+  } catch (err) {
+    console.error("bridge DO unavailable (free-tier budget?)", err.message);
+    return fallback();
+  }
+}
+
 router.get("/minecraft/bridge/poll", async (request, env) => {
   if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
   if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
   const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
   const forwarded = new Request("https://bridge/poll", request);
-  return stub.fetch(forwarded);
+  // While the DO is over budget, return an empty frame; never a 500.
+  return bridgeForward(stub, forwarded, () => Response.json({}));
 });
 
 router.post("/minecraft/bridge/result", async (request, env) => {
@@ -372,7 +388,7 @@ router.post("/minecraft/bridge/result", async (request, env) => {
   if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
   const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
   const forwarded = new Request("https://bridge/result", request);
-  return stub.fetch(forwarded);
+  return bridgeForward(stub, forwarded);
 });
 
 // In-game invocation: the mod POSTs {player, text} when a chat message
@@ -383,7 +399,7 @@ router.post("/minecraft/bridge/invoke", async (request, env) => {
   if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
   const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
   const forwarded = new Request("https://bridge/invoke", request);
-  return stub.fetch(forwarded);
+  return bridgeForward(stub, forwarded, () => new Response("accepted", { status: 202 }));
 });
 
 // Mod roster push: the mod enumerates installed mods at startup and POSTs
@@ -394,7 +410,7 @@ router.post("/minecraft/bridge/roster", async (request, env) => {
   if (!env.MINECRAFT_BRIDGE_DO) return new Response("bridge not configured", { status: 503 });
   const stub = env.MINECRAFT_BRIDGE_DO.get(env.MINECRAFT_BRIDGE_DO.idFromName("minecraft"));
   const forwarded = new Request("https://bridge/roster", request);
-  return stub.fetch(forwarded);
+  return bridgeForward(stub, forwarded);
 });
 
 // Clear the in-game conversation (the per-server ConversationDO keyed
@@ -404,7 +420,7 @@ router.post("/minecraft/bridge/clear", async (request, env) => {
   if (!bridgeAuth(request, env)) return new Response("unauthorized", { status: 401 });
   if (!env.CONVERSATION_DO) return new Response("conversation not configured", { status: 503 });
   const stub = env.CONVERSATION_DO.get(env.CONVERSATION_DO.idFromName("minecraft"));
-  await stub.fetch("https://example.com/clear");
+  await bridgeForward(stub, new Request("https://example.com/clear"));
   return new Response("ok");
 });
 
@@ -416,10 +432,14 @@ router.get("/minecraft/bridge/ping", () => Response.json({ ok: true }));
 
 export default {
   async fetch(request, env, ctx) {
-    // Wake-on-fetch: any HTTP hit re-arms the gateway watchdog and heals a
-    // missing socket. Fire-and-forget with errors swallowed so a gateway
-    // outage can never break slash commands or health checks.
-    if (env.GATEWAY_DO) {
+    // The bridge poll/result/invoke/roster/clear/ping endpoints are hot
+    // (the mod polls every ~1.5s). They must NOT fire the gateway wake —
+    // each wake would burn GatewayDO time and exceed the free tier's DO
+    // duration budget (observed as 500s on /poll). The gateway's own 60s
+    // alarm keeps it alive; it only needs wakes from non-bridge traffic.
+    const url = new URL(request.url);
+    const isBridgeRoute = url.pathname.startsWith("/minecraft/bridge/");
+    if (env.GATEWAY_DO && !isBridgeRoute) {
       const wake = gatewayStub(env)
         .fetch("https://gateway/wake", { method: "POST" })
         .then(() => undefined)

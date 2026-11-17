@@ -44,13 +44,15 @@ WebSocket — see Minecraft leg).
 - [x] `/mc` slash-command handler committed (`afcbda0`) — was riding uncommitted from the earlier slice.
 - [x] **Live hookup DONE (2026-11-16)**: host proxy kills WebSocket upgrades → switched to **long-poll transport** over plain HTTPS (`5cc33a1`). Mod connects via poll loop; `/ai/mcprobe` shows `pollConnected:true`; `/mc status` returns live data (`🟢 26.3 — TPS 20 …`). `/mc` slash commands registered globally (POST /discord/register-commands).
 - [x] **In-game invocation slice (`v0.9.0`) built**: reverse channel (invoke/roster/outbox) + headless brain (`processMinecraftInvocation`) + mod side (JSON config, per-player prefs, `/klyde` command tree, trigger detection, colored broadcast). Worker deployed `55d20e33`; live smoke verified 202 + phase/reply frames through the real agent loop. Mod jar built for 26.3 — deploy to server to enable.
-- [ ] In-game live verification (after deploying the new jar): trigger, progress, reply format/color, roster-aware answers, `/klyde` commands + privacy/visibility effects.
+- [x] `/klyde ban/unban` (ops) blocks invocation (`7b7d385`); banned players' chat still recorded for awareness; prefs gains `banned` flag.
+- [x] **Free-tier DO budget incident + fix (v0.9.1)**: long-poll `/poll` holds (up to 15s each, ~1/s) exhausted the free-tier Durable Object **daily duration budget** → 500s + `1101` on every poll. Fixed: instant poll (no waiter/setTimeout in DO), mod polls 1s with no timeout param, gateway wake skipped on bridge routes, and bridge routes degrade gracefully to `200 {}`/`202` while the DO is over budget (resets at UTC 00:00) so the mod never spams. Worker deployed (version `140369f1`); jar rebuilt `~26.3` — deploy to server.
+- [ ] In-game live verification (after deploying the new jar): trigger, progress, reply format/color, roster-aware answers, `/klyde` commands + privacy/visibility effects + ban/unban enforcement.
 
 **Next (future slices):** Fabric mod (`klyde-bridge`, outbound WS — scaffold in `minecraft/klyde-bridge/`), admin command execution (ADMIN_IDS-gated), in-game invocation + "working on it" feedback. Chat bridge is intentionally OUT of scope — the server already uses the "Simple Discord Link" mod.
 
 ## How to verify / known gaps
 
-- `npm test` green (~190 tests). npm test list includes `test/skills.test.mjs` and `test/discord-mc.test.mjs`.
+- `npm test` green (230 tests). npm test list includes `test/skills.test.mjs` and `test/discord-mc.test.mjs`.
 - Live FTS5 query (`bm25`/`snippet()`) still not exercised against real SQLite — first real `session_search` in Discord is the check (see v0.7.0 spec §8).
 
 ## Secrets (wrangler secret put, never in repo)

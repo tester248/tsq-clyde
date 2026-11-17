@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * query's result. Both are Bearer-authenticated.
  */
 public final class BridgeClient {
-    private static final int POLL_TIMEOUT_MS = 15_000;
     private static final long POLL_INTERVAL_MS = 1_000;
     private static final long FIRST_SUCCESS_ANNOUNCE_MS = 5_000;
 
@@ -128,6 +127,8 @@ public final class BridgeClient {
         while (running.get()) {
             try {
                 pollOnce();
+                // Fast polling: the worker returns instantly (no long-poll —
+                // free-tier DO duration limits forbid holding the request).
                 Thread.sleep(POLL_INTERVAL_MS);
             } catch (InterruptedException ie) {
                 return;
@@ -143,11 +144,11 @@ public final class BridgeClient {
     }
 
     private void pollOnce() throws Exception {
-        String pollUrl = deriveUrl("/poll?timeout=" + POLL_TIMEOUT_MS);
+        String pollUrl = deriveUrl("/poll");
         if (pollUrl == null) return;
 
         HttpRequest req = HttpRequest.newBuilder(URI.create(pollUrl))
-            .timeout(Duration.ofSeconds(POLL_TIMEOUT_MS / 1000 + 5))
+            .timeout(Duration.ofSeconds(10))
             .header("Authorization", "Bearer " + mod.getConfig().token())
             .GET()
             .build();

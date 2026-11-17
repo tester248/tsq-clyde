@@ -31,7 +31,7 @@ export class MinecraftBridgeDO {
     this.seq = 0;
     this.pending = new Map(); // query id -> { resolve, timer }
     this.queryQueue = [];     // frames awaiting pickup by the mod's poller
-    this.waiters = [];        // poll requests waiting for a queued query
+    this.waiters = [];        // (unused after dropping long-polling)
     this.outbox = [];         // outgoing chat frames (progress + replies)
     this.roster = [];         // installed mods pushed by the mod
     this.lastPollAt = null;
@@ -56,13 +56,20 @@ export class MinecraftBridgeDO {
           rosterCount: this.roster.length,
           debug: this.debug,
         });
-      case "/poll": {
-        const timeout = Math.min(15_000, Math.max(1_000, parseInt(url.searchParams.get("timeout") ?? "10000", 10) || 10_000));
-        const frame = await this.pollWait(timeout);
-        if (!frame) return Response.json({});
-        if (frame.type === "message") return Response.json({ message: frame });
-        return Response.json({ query: frame });
-      }
+      case "/poll":
+        // No long-polling: free-tier DOs have a strict duration budget, and
+        // holding the request open (setTimeout) counts against it, causing
+        // "Exceeded allowed duration in Durable Objects free tier" 500s.
+        // Return instantly — the mod polls frequently instead.
+        this.lastPollAt = Date.now();
+        if (this.queryQueue.length > 0) {
+          const q = this.queryQueue.shift();
+          return Response.json({ query: q });
+        }
+        if (this.outbox.length > 0) {
+          return Response.json({ message: this.outbox.shift() });
+        }
+        return Response.json({});
       case "/result": {
         const body = await request.json();
         this.resolveResult(body);
@@ -220,46 +227,14 @@ export class MinecraftBridgeDO {
       });
       this.pending.set(id, { resolve, timer });
       this.queryQueue.push(frame);
-      // Wake the earliest waiter, if any, with this frame.
-      const waiter = this.waiters.shift();
-      if (waiter) {
-        clearTimeout(waiter.timer);
-        waiter.resolve(frame);
-      }
     });
   }
 
-  // Wait up to `timeout` ms for a queued query or outbox message (long-poll).
-  // Returns the frame or null on timeout. Queries take priority over outbox
-  // messages so tool requests aren't starved.
-  async pollWait(timeout) {
-    this.lastPollAt = Date.now();
-    if (this.queryQueue.length > 0) {
-      return this.queryQueue.shift();
-    }
-    if (this.outbox.length > 0) {
-      return this.outbox.shift();
-    }
-    return new Promise((resolve) => {
-      const timer = this.deps.schedule(() => {
-        const idx = this.waiters.findIndex((w) => w.timer === timer);
-        if (idx >= 0) this.waiters.splice(idx, 1);
-        resolve(null);
-      });
-      this.waiters.push({ resolve, timer });
-    });
-  }
-
-  // Push an outgoing chat frame (progress or reply) into the outbox and wake
-  // a waiting poller if any. Bounded to avoid unbounded growth.
+  // Push an outgoing chat frame (progress or reply) into the outbox.
+  // Bounded to avoid unbounded growth.
   pushOutbox(frame) {
     if (this.outbox.length >= 100) this.outbox.shift();
     this.outbox.push({ type: "message", ...frame });
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      clearTimeout(waiter.timer);
-      waiter.resolve({ type: "message", ...frame });
-    }
   }
 
   async #ensureRoster() {
