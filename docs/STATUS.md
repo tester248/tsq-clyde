@@ -6,7 +6,7 @@
 ## What Klyde is
 
 A Discord + Minecraft agent bot on Cloudflare Workers + Durable Objects.
-Worker: `tsq-klyde`. Repo: `tester248/tsq-clyde`, branch `main`.
+Worker: `tsq-klyde`. Repo: `tester248/tsq-klyde`, branch `main`.
 
 Architecture: a "thin client, fat brain" agent. Cloudflare is the brain
 (agent loop, memory, skills, session search, web access). Each leg is a thin
